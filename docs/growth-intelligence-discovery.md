@@ -10,14 +10,14 @@
 
 1. **There is no existing Growth Intelligence Engine.** No table, route, task or document in any BWE repository mentions opportunities, opportunity scores, daily action packages, effectiveness scores or growth snapshots.
 2. **A lot of the raw material already exists inside the BWE app** (`BWERepo/BWE`): inbound leads, a manual outbound prospect worksheet, a cold-email sender with mailboxes, unsubscribes and campaign counts, a Gmail IMAP reader, proposals, agreements, Stripe payments, projects, first-party site analytics with UTM fields, GA4 via GTM, a Search Console client (BWESEO) and an Anthropic SDK integration. GIE should be built **on top of these**, not beside them.
-3. **Recommendation: build GIE as a new "Growth" area inside the existing BWE app** (same TanStack Start Worker, same Supabase project, same `__SCHEMA__` migration process, same staging→production pipeline). A separate Worker or app would duplicate auth, deployment, secrets and the admin shell for no benefit at this size.
+3. **Decided (2026-11-13): GIE is a standalone app in `BWERepo/GrowthIntelligenceEngine` with its own Cloudflare Worker**, sharing BWE's Supabase project (own `gie_prod` / `gie_staging` schemas) and BWE's admin logins, and reading BWE's sales data read-only (section 5.1). The original recommendation was to build inside the BWE app; the owner chose a separate app, which suits offering GIE to agency clients later.
 4. **Multi-tenancy does not exist today.** The app has one business, two roles (`admin`, `customer`), and isolates environments by Postgres schema (`public`, `bwe_staging`, plus HDBS schemas) in **one shared Supabase project with one shared `auth.users`**. I recommend GIE be *tenant-ready* from day one (every GIE table carries `tenant_id` with RLS), with BWE as the only tenant until Phase 8. This is the main decision I need from you (section 13).
 5. **Two infrastructure limits shape the design:**
    - **Cloudflare Workers Free plan**: the account is capped at 5 cron triggers across *all* projects and is already at the limit (staging's keepalive cron was dropped on 2026-10-08 to make room). Queues are not available on the Free plan. The Free plan also has a 10 ms CPU limit per invocation.
    - **Supabase free tier**: one project shared by BWE production, BWE staging and HDBS; no point-in-time recovery; 500 MB database.
    The design below works within these limits by **reusing the existing `*/15 * * * *` cron** as a dispatcher, but I recommend upgrading to **Workers Paid ($5/month)** before Phase 2 (section 13).
 6. **Estimated operating cost** at BWE's current scale: roughly **$13–$95/month** depending on the AI model and search provider chosen (section 11).
-7. **Estimated build effort:** about **33–46 focused working days** across Phases 1–8, with a usable Daily Action Center for BWE itself after Phases 1–3 (about 16–22 days).
+7. **Estimated build effort:** about **35–49 focused working days** across Phases 1–8 (including setting up the standalone app), with a usable Daily Action Center for BWE itself after Phases 1–3 (about 18–25 days).
 
 ---
 
@@ -87,7 +87,7 @@
 | No reply tracking | "Replies requiring attention" impossible | Extend IMAP reader to read the lead mailbox inbox (read-only), match by Message-ID/thread and sender address. |
 | No discovery/search provider | No automated discovery | New provider adapter (section 6). |
 | No cost/usage tracking | Budgets impossible | `usage_events` + per-tenant budgets enforced before every paid call. |
-| No queue; cron cap reached | Scheduling constrained | Dispatcher on the existing 15-minute cron (section 5); Queues only after a plan upgrade. |
+| No queue; cron cap reached | Scheduling constrained | One cron trigger on the GIE Worker after the Workers Paid upgrade (section 5.2); Queues available then too. |
 | Generated `types.ts` describes one schema and many newer tables are accessed with `as any` | Weak typing | GIE uses Zod row schemas at the boundary; regenerate types when convenient. |
 | ~700 signed-in endpoints throw raw `error.message` (security doc) | Info leakage | GIE functions use the existing sanitizer and typed errors from the start. |
 
@@ -95,32 +95,42 @@
 
 ## 5. Recommended architecture
 
-### 5.1 Where it lives
+### 5.1 Where it lives (updated 2026-11-13: standalone app, owner's decision)
+
+GIE is a **standalone app in `BWERepo/GrowthIntelligenceEngine`**, deployed as its **own Cloudflare Worker**, sharing BWE's Supabase project and logins.
 
 ```
-BWE Worker (businesswebexpress, TanStack Start)
-├── /admin/growth                      ← Daily Action Center (default landing of Growth)
+GrowthIntelligenceEngine repo → Worker "growth-intelligence" (e.g. growth.businesswebexpress.com; staging host behind Cloudflare Access)
+├── src/routes/                         ← TanStack Start, same UI kit as BWE (shadcn/Radix, Tailwind, recharts)
+│   ├── /            Daily Action Center (default landing)
 │   ├── /opportunities  /prospects  /follow-ups
-│   ├── /review         (End-of-Day Review)
-│   ├── /performance    (30-Day Growth Performance)
-│   ├── /campaigns  /reports  /settings
-├── src/lib/growth/                    ← all GIE logic, pure + testable
-│   ├── scoring/opportunity.ts         (deterministic, versioned)
-│   ├── scoring/effectiveness.ts       (deterministic, versioned)
-│   ├── growth/rolling.ts              (30-day metrics, comparisons)
-│   ├── providers/search/*.ts          (adapter interface + 1 implementation)
-│   ├── providers/ai/*.ts              (adapter interface + Anthropic implementation)
+│   ├── /review      (End-of-Day Review)
+│   ├── /performance (30-Day Growth Performance)
+│   └── /campaigns  /reports  /settings
+├── src/lib/                            ← all GIE logic, pure + testable
+│   ├── scoring/opportunity.ts  scoring/effectiveness.ts   (deterministic, versioned)
+│   ├── growth/rolling.ts                                   (30-day metrics, comparisons)
+│   ├── providers/search/*  providers/ai/*                  (adapter interfaces)
 │   ├── pipeline/discover.ts  classify.ts  package.ts  review.ts
-│   └── *.functions.ts                 (server functions, Zod-validated)
-├── tasks/growth/dispatch.ts           ← runs on the existing */15 cron
-└── Supabase: new gie_* tables in public and bwe_staging (via __SCHEMA__ migrations)
+│   ├── bwe-source/*                                        (read-only access to BWE tables)
+│   └── *.functions.ts                                      (server functions, Zod-validated)
+├── tasks/dispatch.ts                   ← one cron trigger for this Worker (needs Workers Paid, see 5.2)
+└── supabase/migrations/                ← __SCHEMA__ templates rendered to gie_prod and gie_staging
 ```
 
-All tables are prefixed `gie_` so they are easy to find, migrate and, if ever needed, move to a dedicated schema or project.
+- **Database:** same Supabase project, **own schemas `gie_prod` and `gie_staging`**, following the existing schema-per-environment layout (`public`, `bwe_staging`, `hdbs_prod`, `hdbs_staging`). GIE never writes to BWE's schemas.
+- **Reading BWE data:** leads, proposals, agreements, payments, projects, `site_visits`, `email_log` and the unsubscribe/suppression lists are read **read-only** from `public` (production) or `bwe_staging` (staging) by server code, through a small `bwe-source` module with Zod row schemas. Each GIE environment is pinned to its matching BWE schema, so staging never reads production data.
+- **Sign-in:** Supabase Auth is per project, so **the existing BWE admin accounts (with their 2FA) sign in here**. Access is granted only by `gie_tenant_memberships`, never by "authenticated" alone (HDBS and BWE customers share `auth.users`).
+- **Sending outreach:** GIE sends approved emails through the same lead mailbox (same SMTP credential, added as secrets to this Worker), filters every recipient against BWE's unsubscribe and suppression lists, and BCCs the existing log address so BWE's email log keeps a complete record.
+- **Shared code:** small helpers (rate limiter, error sanitizer, Sentry scrub, IMAP/SMTP clients, local-time) are copied from BWE with a note of their source, not imported across repositories.
+- **Deploys:** its own `deploy-staging` / `deploy-production` GitHub workflows modelled on BWE's (version check, staging-must-match, secret-name parity). Production only with the owner's go-ahead.
+- **Links between the apps:** "Convert to lead" creates the BWE `leads` row through a narrow BWE server endpoint (or, until that exists, a deep link into BWE admin), so BWE stays the source of truth for customers.
 
-### 5.2 Scheduling without new cron triggers
+All GIE tables keep the `gie_` prefix for clarity, even inside their own schema.
 
-- Register `growth:dispatch` as a second task on the **existing** `*/15 * * * *` cron (Nitro allows several tasks per cron expression). No new trigger, so the 5-trigger cap is not exceeded.
+### 5.2 Scheduling
+
+- The GIE Worker gets **one** `*/15 * * * *` cron that runs `tasks/dispatch.ts`. The Cloudflare account is already at the free plan's 5-trigger cap, so this needs **Workers Paid**, which the owner approved before Phase 2. Phase 1 has no scheduled jobs.
 - Each run: for every active tenant, compute local time from `tenant_work_schedules.timezone` (IANA name, DST handled by `Intl`), then decide which jobs are due:
   - **Morning package** due at 08:00 local (configurable), on business days only.
   - **End-of-day review** due at 17:00 local.
@@ -292,7 +302,7 @@ Bands: 90+ Exceptional, 75–89 Highly Effective, 60–74 Productive, 40–59 Ne
 2. **Middle — Today's Priority Actions:** up to five cards with name, verified site, source link, discovery time, evidence, Opportunity Score chip with breakdown on hover, recommended action, effort, draft, follow-up.
 3. **Supporting — Daily Effectiveness:** today's provisional/final score, component bars, completeness indicator. Smaller than the growth panel by design.
 4. Opportunity Scores appear only on opportunity and prospect cards.
-Empty states say what is missing ("No verified opportunities yet — discovery runs overnight"), never placeholder numbers. Navigation: a "Growth" entry in the admin nav opens the Daily Action Center; the existing Leads tab cards keep working.
+Empty states say what is missing ("No verified opportunities yet — discovery runs overnight"), never placeholder numbers. Navigation: the GIE app opens on the Daily Action Center; a link in the BWE admin nav points to it, and the existing Leads tab cards keep working.
 
 ---
 
@@ -322,7 +332,7 @@ Effort is in focused working days and includes tests and staging deploys; your r
 
 | Phase | Scope | Est. days | Key tests |
 |---|---|---:|---|
-| 1 Multi-tenant foundation | `gie_tenants`, memberships, `has_tenant_role`, schedules, audit, usage, budgets, job runs; BWE tenant seed; Growth nav shell with empty states; dispatcher task wired to existing cron | 4–6 | RLS cross-tenant suite (two tenants, user JWTs), server-function tenant checks, idempotent job claim, DST transitions |
+| 1 App + multi-tenant foundation | New app scaffold in this repo (TanStack Start Worker, sign-in with BWE admin accounts, staging/production deploy workflows, CI); `gie_staging`/`gie_prod` schemas; `gie_tenants`, memberships, `has_tenant_role`, schedules, audit, usage, budgets, job runs; BWE tenant seed; read-only BWE data module; navigation shell with empty states | 6–9 | RLS cross-tenant suite (two tenants, user JWTs), server-function tenant checks, idempotent job claim, DST transitions |
 | 2 Discovery and scoring | campaigns, search + PageSpeed adapters, robots-aware fetch, dedupe, AI classification with Zod + verbatim evidence check, Opportunity Score v1, cost tracking | 6–8 | scoring golden tests, schema rejection, injection fixtures, dedupe, budget stop |
 | 3 Daily Action Center | prospects (+ import from `lead_prospects`), packages, ranking, drafts + validator, approval → existing sender, follow-ups, actions/events, reply detection via IMAP | 6–8 | one package per local date, ≤5 items, duplicate-outreach prevention, unsubscribe filter, approval required |
 | 4 End-of-Day Review | reconciliation, corrections, carry-forward rules, AI assessment, tomorrow's plan | 3–4 | no duplicate carry-forward, stale detection, finalize locks |
@@ -330,7 +340,7 @@ Effort is in focused working days and includes tests and staging deploys; your r
 | 6 30-Day Growth | funnel events from existing tables, revenue events, attribution, aggregates, snapshots, dashboard and charts, scenario flags | 5–7 | zero-baseline %, no double counting, cohort vs event date, small-sample flags |
 | 7 Continuous improvement | recommendations with evidence, approval, outcome tracking | 2–3 | no automatic campaign changes |
 | 8 Agency readiness | client tenant onboarding, per-tenant reports, quotas, monitoring; staging Supabase split recommended first | 4–6 | full cross-tenant penetration checklist |
-| **Total** | | **33–46** | |
+| **Total** | | **35–49** | |
 
 The spec's 24 deliverables map onto these phases; the system diagram, ERD, API specification and admin documentation are produced as Markdown in `docs/growth-intelligence/` during Phases 1–2.
 
@@ -345,7 +355,7 @@ The spec's 24 deliverables map onto these phases; the system diagram, ERD, API s
 5. **Reply detection.** OK to read the lead mailbox INBOX read-only over IMAP (same approach as the existing email-log sync)?
 6. **Discovery targets.** Industries, geography (Knoxville/Tennessee first?), and whether both "buying-intent" and "prospecting" opportunities should be discovered from the start.
 7. **Project instructions file.** `Z:\Backup\websites\Claude\ProjectInstructions.md` could not be read from the cloud and is not in `BWERepo/ClaudeConfig`. If it contains rules for this project, please add it to that repo (or paste it into the thread). The repo's own `StandardPrompts.md` ("ask questions until 100% certain", "always deploy to staging and bump the patch version", "check your work") will be followed in Phases 1+.
-8. **Approval to start Phase 1.** Nothing has been changed; Phase 1 creates migrations (to be applied by you via the SQL editor, staging schema first) and the Growth nav shell, deployed to staging only.
+8. **Approval to start Phase 1.** Nothing has been changed; Phase 1 scaffolds the standalone app in this repo, creates migrations (applied by you via the SQL editor, `gie_staging` first) and the navigation shell, deployed to staging only. It also needs a Cloudflare API token secret in this repo and the GIE schemas added to Supabase's exposed schemas.
 
 ---
 
@@ -354,12 +364,13 @@ The spec's 24 deliverables map onto these phases; the system diagram, ERD, API s
 | # | Question | Owner's decision |
 |---|---|---|
 | 1 | Multi-tenancy | **Tenant-ready, BWE only for now.** Every GIE table carries `tenant_id` with RLS; client onboarding waits for Phase 8. |
-| 2 | Cloudflare plan | **Upgrade to Workers Paid before Phase 2.** Phase 1 runs on the free plan using the existing 15-minute cron. |
+| 2 | Cloudflare plan | **Upgrade to Workers Paid before Phase 2.** Phase 1 needs no scheduled jobs, so it runs on the free plan. |
 | 3 | AI model | **Start with Opus 5.5 everywhere; in Phase 2 compare Haiku 5.5 on real prospects** and switch classification only if quality holds. |
 | 4 | Search provider | **Claude compares 2–3 providers in Phase 2** (current prices and terms) and recommends one before any signup. |
 | 5 | Spending cap | **$50/month hard cap** on AI + search; alerts at $25 and $40; at the cap, discovery and drafts pause, daily actions and follow-ups keep working. |
 | 6 | Reply detection | **Yes, read-only IMAP on the lead mailbox INBOX, reusing the existing lead mailbox credential** (`LEAD_EMAIL_SMTP_*` / `EMAIL_LOG_IMAP_*`). Nothing is marked read, moved or deleted. |
 | 7 | Discovery targets | **East Tennessee first** (Knoxville, Chattanooga and nearby) **in BWE's served industries** (HVAC, dental, restaurants, home services, legal, nonprofits and the other industries in the questionnaire list), **both buying-intent and prospecting signals**, kept separate in scoring. |
 | 8 | Project instructions | **Owner will add `ProjectInstructions.md` to `BWERepo/ClaudeConfig`.** Read it before starting Phase 1. |
+| 9 | Where GIE lives | **Standalone app, own Worker, in `BWERepo/GrowthIntelligenceEngine`**, same Supabase project (own schemas) and BWE admin logins, BWE data read-only (section 5.1). |
 
 Still pending: the owner's explicit approval to start Phase 1.
