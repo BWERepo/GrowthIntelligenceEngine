@@ -1,0 +1,26 @@
+{
+  // Production Worker. Staging is the "staging" environment below.
+  // Secrets (never in this file): SUPABASE_SERVICE_ROLE_KEY.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "growth-intelligence",
+  "main": "@tanstack/react-start/server-entry",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "vars": {
+    // GIE's own tables, and the BWE schema it reads (read-only) in the same environment.
+    "GIE_DB_SCHEMA": "gie_prod",
+    "BWE_DB_SCHEMA": "public",
+    "BWE_TENANT_SLUG": "bwe"
+  },
+  "env": {
+    "staging": {
+      "name": "growth-intelligence-staging",
+      "vars": {
+        "GIE_DB_SCHEMA": "gie_staging",
+        "BWE_DB_SCHEMA": "bwe_staging",
+        "BWE_TENANT_SLUG": "bwe"
+      }
+    }
+  }
+}

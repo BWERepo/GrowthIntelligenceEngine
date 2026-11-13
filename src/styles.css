@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* Business Web Express app palette (BWE DESIGN.md), dense app variant. */
+@theme {
+  --color-parchment: oklch(0.985 0.006 250);
+  --color-parchment-deep: oklch(0.955 0.025 245);
+  --color-espresso: oklch(0.27 0.075 255);
+  --color-espresso-soft: oklch(0.45 0.045 255);
+  --color-terracotta: oklch(0.55 0.21 262);
+  --color-terracotta-deep: oklch(0.47 0.2 262);
+  --color-line: oklch(0.9 0.02 250);
+  --color-card: oklch(1 0 0);
+  --color-destructive: oklch(0.55 0.22 27);
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
+  --font-sans: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+html { background: var(--color-parchment); color: var(--color-espresso); }
+body { font-family: var(--font-sans); font-size: 0.875rem; line-height: 1.5; }
+:focus-visible { outline: 2px solid var(--color-terracotta); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
