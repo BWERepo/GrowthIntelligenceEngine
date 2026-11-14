@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { EmptyState, Notice, PageHeader, Panel } from "@/components/ui";
+import { EffectivenessSummary } from "@/components/effectiveness";
 import { useWorkspace } from "@/lib/use-workspace";
 import {
   addFollowUp,
@@ -65,7 +66,7 @@ function DailyActionCenter() {
         </Panel>
         {tenant.role !== "viewer" ? <RepliesPanel /> : null}
         <Panel kicker="Supporting" title="Daily Effectiveness" emphasis="supporting">
-          <p className="text-espresso-soft">Score unavailable — insufficient verified activity data.</p>
+          <EffectivenessSummary />
         </Panel>
       </div>
     </>

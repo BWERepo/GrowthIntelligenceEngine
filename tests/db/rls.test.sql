@@ -751,4 +751,124 @@ EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one assessment per revie
 END $$;
 RESET ROLE;
 
+
+-- ================================================================ Phase 5: Daily Effectiveness Score
+INSERT INTO gie_staging.gie_effectiveness_scoring_rules (tenant_id, version, rules)
+  SELECT id, 'des-v1', '{"version":"des-v1"}'::jsonb FROM gie_staging.gie_tenants ON CONFLICT (tenant_id, version) DO NOTHING;
+INSERT INTO gie_staging.gie_daily_effectiveness_scores (tenant_id, local_date, review_id, rule_version, rules, available, score, band, completeness)
+  SELECT tenant_id, local_date, id, 'des-v1', '{"version":"des-v1"}'::jsonb, true, 72, 'Productive', 60 FROM gie_staging.gie_end_of_day_reviews;
+INSERT INTO gie_staging.gie_effectiveness_score_components (tenant_id, score_id, component, weight, measured, points, explanation)
+  SELECT tenant_id, id, 'priority_execution', 10, true, 8, '1 of 1 actions completed.' FROM gie_staging.gie_daily_effectiveness_scores;
+INSERT INTO gie_staging.gie_effectiveness_score_events (tenant_id, score_id, component, event_type, source_table, source_id, points)
+  SELECT s.tenant_id, s.id, 'priority_execution', 'action_completed', 'gie_daily_action_items', i.id, 8
+  FROM gie_staging.gie_daily_effectiveness_scores s JOIN gie_staging.gie_daily_action_items i ON i.tenant_id = s.tenant_id;
+SELECT FROM (SELECT set_config('test.bwe_score', s.id::text, false) FROM gie_staging.gie_daily_effectiveness_scores s
+  JOIN gie_staging.gie_tenants t ON t.id = s.tenant_id WHERE t.slug = 'bwe') x;
+SELECT FROM (SELECT set_config('test.b_review', r.id::text, false) FROM gie_staging.gie_end_of_day_reviews r
+  JOIN gie_staging.gie_tenants t ON t.id = r.tenant_id WHERE t.slug = 'client-b') x;
+
+SET ROLE authenticated;
+-- 26. Scores are per workspace and read-only for everyone signed in.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_daily_effectiveness_scores) AND (SELECT count(*) = 1 FROM gie_staging.gie_effectiveness_score_components)
+  AND (SELECT count(*) = 1 FROM gie_staging.gie_effectiveness_score_events) AND (SELECT count(*) = 1 FROM gie_staging.gie_effectiveness_scoring_rules), 'tenant B owner sees only tenant B scores, components, evidence and rules');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_daily_effectiveness_scores) AND (SELECT count(*) = 1 FROM gie_staging.gie_effectiveness_score_events), 'viewer reads scores and evidence');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_daily_effectiveness_scores) AND (SELECT count(*) = 0 FROM gie_staging.gie_effectiveness_scoring_rules), 'BWE customer sees no scores');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000d1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_effectiveness_score_components), 'other site''s user sees no score components');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+DO $$ BEGIN
+  UPDATE gie_staging.gie_daily_effectiveness_scores SET score = 100;
+  RAISE EXCEPTION 'FAILED: owner edited a score';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - owners cannot edit a score';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_effectiveness_scores (tenant_id, local_date, review_id, rule_version, rules, available, score, band, completeness)
+  VALUES (current_setting('test.bwe_id')::uuid, '2026-12-01', current_setting('test.bwe_review')::uuid, 'des-v1', '{}', true, 99, 'Exceptional', 100);
+  RAISE EXCEPTION 'FAILED: owner wrote a score';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - scores are written only by the server';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_effectiveness_scoring_rules (tenant_id, version, rules) VALUES (current_setting('test.bwe_id')::uuid, 'des-v2', '{}');
+  RAISE EXCEPTION 'FAILED: owner changed the scoring rules';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - scoring rules are not editable by users';
+END $$;
+-- Handling a reply stamps when, and the client cannot choose the time.
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_replies SET handled_at = now();
+  RAISE EXCEPTION 'FAILED: owner set handled_at';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - the handled time is stamped by the database, not chosen';
+END $$;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+UPDATE gie_staging.gie_outreach_replies SET status = 'handled';
+SELECT pg_temp.expect((SELECT handled_at IS NOT NULL FROM gie_staging.gie_outreach_replies), 'handling a reply stamps the time');
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_replies SET status = 'new';
+  RAISE EXCEPTION 'FAILED: a handled reply was reopened';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a handled reply cannot be reopened';
+END $$;
+RESET ROLE;
+
+SET ROLE service_role;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_daily_effectiveness_scores SET score = 100;
+  RAISE EXCEPTION 'FAILED: score rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - a finalized score cannot be rewritten, even by the server';
+END $$;
+DO $$ BEGIN
+  DELETE FROM gie_staging.gie_daily_effectiveness_scores;
+  RAISE EXCEPTION 'FAILED: score deleted';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - a finalized score cannot be deleted';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_effectiveness_score_events SET points = 99;
+  RAISE EXCEPTION 'FAILED: evidence rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - score evidence cannot be rewritten';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_effectiveness_scores (tenant_id, local_date, review_id, rule_version, rules, available, score, band, completeness)
+  SELECT tenant_id, local_date, review_id, rule_version, rules, available, score, band, completeness FROM gie_staging.gie_daily_effectiveness_scores LIMIT 1;
+  RAISE EXCEPTION 'FAILED: second score for one date';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one score per workspace per local date';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_effectiveness_scores (tenant_id, local_date, review_id, rule_version, rules, available, completeness, unavailable_reason)
+  VALUES (current_setting('test.bwe_id')::uuid, '2026-12-02', current_setting('test.bwe_review')::uuid, 'des-v1', '{}', false, 0, NULL);
+  RAISE EXCEPTION 'FAILED: unavailable without a reason';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - an unavailable score always says why';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_effectiveness_scores (tenant_id, local_date, review_id, rule_version, rules, available, score, band, completeness, unavailable_reason)
+  VALUES (current_setting('test.bwe_id')::uuid, '2026-12-03', current_setting('test.bwe_review')::uuid, 'des-v1', '{}', false, 0, 'Low', 20, 'thin');
+  RAISE EXCEPTION 'FAILED: unavailable stored as a zero';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - unavailable is never stored as a score';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_effectiveness_scores (tenant_id, local_date, review_id, rule_version, rules, available, score, band, completeness)
+  VALUES (current_setting('test.bwe_id')::uuid, '2026-12-04', current_setting('test.b_review')::uuid, 'des-v1', '{}', true, 50, 'Needs Improvement', 80);
+  RAISE EXCEPTION 'FAILED: score pointed at another tenant''s review';
+EXCEPTION WHEN foreign_key_violation THEN RAISE NOTICE 'ok - a score cannot point at another tenant''s review';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_effectiveness_score_components (tenant_id, score_id, component, weight, measured, points, explanation)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_score')::uuid, 'action_quality', 25, false, 5, 'x');
+  RAISE EXCEPTION 'FAILED: unmeasured component with points';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a component is measured or not, never both';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_effectiveness_score_components (tenant_id, score_id, component, weight, measured, points, explanation)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_score')::uuid, 'action_quality', 25, true, 26, 'x');
+  RAISE EXCEPTION 'FAILED: points above the weight';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - points cannot exceed a component''s weight';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_effectiveness_score_events (tenant_id, score_id, component, event_type, source_table, source_id, points)
+  SELECT tenant_id, score_id, component, event_type, source_table, source_id, points FROM gie_staging.gie_effectiveness_score_events LIMIT 1;
+  RAISE EXCEPTION 'FAILED: one event earned points twice';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - each event earns points once per component';
+END $$;
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;

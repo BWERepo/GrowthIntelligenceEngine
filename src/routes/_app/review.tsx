@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { EmptyState, Notice, PageHeader, Panel } from "@/components/ui";
+import { EffectivenessDetail } from "@/components/effectiveness";
 import { useWorkspace } from "@/lib/use-workspace";
 import { buildReviewNow, finalizeReviewFn, getReview, saveReviewItem, type ReviewItemView, type ReviewView } from "@/lib/review.functions";
 import { allowedDispositions, DISPOSITION_LABEL, isSettled, needsDate, recommendDisposition, type Disposition, type ItemStatus } from "@/lib/review/rules";
@@ -29,7 +30,7 @@ function Page() {
   const [date, setDate] = useState<string | undefined>(undefined);
   const fetchReview = useServerFn(getReview);
   const q = useQuery({ queryKey: ["review", tenant.slug, date ?? "today"], queryFn: () => fetchReview({ data: { slug: tenant.slug, date } }) });
-  const refresh = () => qc.invalidateQueries({ queryKey: ["review", tenant.slug] });
+  const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ["review", tenant.slug] }), qc.invalidateQueries({ queryKey: ["effectiveness", tenant.slug] })]);
   const build = useServerFn(buildReviewNow);
   const buildM = useMutation({ mutationFn: () => build({ data: { slug: tenant.slug } }), onSuccess: refresh });
   const v = q.data;
@@ -62,6 +63,9 @@ function Page() {
           ) : (
             <ReviewBody v={v} onChanged={refresh} />
           )}
+          <Panel kicker="Separate measurement" title={`Daily Effectiveness, ${v.localDate}`}>
+            <EffectivenessDetail date={v.localDate} />
+          </Panel>
         </div>
       ) : null}
     </>

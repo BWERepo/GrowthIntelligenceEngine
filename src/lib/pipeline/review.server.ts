@@ -12,6 +12,7 @@ import { estimateCostUsd, worstCaseCostUsd, writeAssessment, AssessmentOutput, A
 import { rankCandidates } from "@/lib/actions/ranking";
 import { checkChoice, hashFacts, isSettled, recommendDisposition, ungroundedNumbers, type Disposition, type ItemKind, type ItemStatus } from "@/lib/review/rules";
 import { loadCandidates, loadSchedule } from "./package.server";
+import { runScores } from "./effectiveness.server";
 import type { TenantRow } from "./discover.server";
 
 type Db = SupabaseClient<any, any, any>;
@@ -296,6 +297,7 @@ export async function runReviewTick(env: ServerEnv, now = new Date()): Promise<A
       const r = await runEndOfDayReview(db, tenant, now);
       if (r.status === "created") log.push({ tenant: tenant.slug, step: "review", detail: `${r.items} items` });
       for (const d of await runAssessments(db, env, tenant, now)) log.push({ tenant: tenant.slug, step: "review", detail: d });
+      for (const d of await runScores(db, tenant)) log.push({ tenant: tenant.slug, step: "score", detail: d });
     } catch (error) {
       log.push({ tenant: tenant.slug, step: "review", detail: `failed: ${error instanceof Error ? error.message : String(error)}` });
     }

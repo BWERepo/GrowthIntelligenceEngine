@@ -123,3 +123,12 @@ do-not-contact.
    it); as owner you can press *Build today's review now* on the End-of-Day Review page.
 3. **Try it:** correct a status, choose a decision for each unfinished item, press *Finalize*. The note on the day appears
    within about 15 minutes (it needs `ANTHROPIC_API_KEY`; without it the review still works and says the note is not written).
+
+## 9. Phase 5: Daily Effectiveness Score
+
+1. **Database.** Render and run `supabase/migrations/20261118120000_gie_effectiveness.sql` on staging after the Phase 4 one.
+   It adds the score tables, stores the first rule set (`des-v1`) for each existing workspace, and starts stamping when a
+   reply is marked handled. No new keys.
+2. **Check.** The Daily Action Center's small *Daily Effectiveness* panel shows today's provisional score or why it is
+   unavailable. Finalize an end-of-day review; within about 15 minutes that day's final score is stored and appears on the
+   End-of-Day Review page. Rules and scoring: `docs/growth-intelligence/effectiveness-score.md`.
