@@ -3,7 +3,7 @@
 Discovers business opportunities, recommends the day's most valuable actions, reviews what got done, and measures
 whether the business is actually growing.
 
-**Status:** Phase 1 (app setup and multi-tenant foundation) merged and on staging. Phase 2 (discovery and scoring) merged. Phase 3 first slice (daily actions, drafts, approval, follow-ups; no sending yet) in review.
+**Status:** Phase 1 (app setup and multi-tenant foundation) merged and on staging. Phase 2 (discovery and scoring) merged. Phase 3 first slice (daily actions, drafts, approval, follow-ups) merged; second slice (sending and reply detection) in review.
 
 - Plan and decisions: [`docs/growth-intelligence-discovery.md`](docs/growth-intelligence-discovery.md)
 - Setting up staging: [`docs/setup.md`](docs/setup.md)

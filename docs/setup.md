@@ -85,5 +85,32 @@ Haiku 5.5 comparison is a later step on real pages).
 3. **Check the unsubscribe lists.** Approval reads BWE's `lead_email_unsubscribes` and `email_suppressions` tables
    by an `email` column. If those names differ on staging, approval is refused (it fails closed); tell me what the
    tables look like and I will fix the query.
-4. **Not in this slice:** nothing is sent, and replies are not detected. Approval only records that a person approved
-   the exact text. Sending (through BWE's existing lead-email sender) and reply detection come next.
+4. **Sending and replies come in section 7.**
+
+## 7. Phase 3, second slice: sending and replies
+
+GIE sends approved outreach through BWE's own lead mailbox and reads that mailbox's INBOX (read-only) for replies.
+It reuses BWE's unsubscribe page and lists, so there is no new sending service.
+
+1. **Database.** Render and run `supabase/migrations/20261116120000_gie_outreach_send.sql` on staging.
+2. **Worker secrets** (staging first). Use the same values BWE uses; the values never go in the repository:
+
+   ```
+   npx wrangler secret put LEAD_EMAIL_SMTP_USER --env staging       # the lead mailbox address
+   npx wrangler secret put LEAD_EMAIL_SMTP_PASSWORD --env staging   # its Google app password (works for IMAP too)
+   npx wrangler secret put UNSUBSCRIBE_SECRET --env staging         # must equal BWE's, or its unsubscribe page rejects our links
+   ```
+
+   Optional: `LEAD_EMAIL_SMTP_HOST` (default smtp.gmail.com), `LEAD_EMAIL_SMTP_PORT` (465), `LEAD_EMAIL_IMAP_HOST`
+   (smtp. replaced by imap.), `EMAIL_LOG_IMAP_USER` / `EMAIL_LOG_IMAP_PASSWORD` (a separate login for reading replies),
+   `UNSUBSCRIBE_BASE_URL` (default https://businesswebexpress.com), `GIE_DAILY_SEND_CAP` (default 20 sent emails a day).
+3. **BWE's mailing address** is read from BWE's business settings (the mailing address, never the physical one). If it is
+   empty, nothing is sent.
+4. **Check on staging with your own address first:** make a prospect whose email is yours, approve, press *Send now*,
+   click the unsubscribe link in the email (BWE's page should confirm), reply to it, and within 15 minutes the reply
+   appears under *Replies to your outreach*.
+
+What happens: *Send now* is a separate click after approval. It re-runs the validator and the unsubscribe and suppression
+check, stops at the daily cap, sends once (a double click cannot send twice), BCCs BWE's `+log` address so BWE's email
+log keeps its record, and schedules a 7-day follow-up reminder. A reply stops that reminder; a bounce marks the address
+do-not-contact.

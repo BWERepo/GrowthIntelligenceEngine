@@ -1,7 +1,8 @@
 {
   // Production Worker. Staging is the "staging" environment below.
   // Secrets (never in this file): SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY,
-  // BRAVE_SEARCH_API_KEY, PAGESPEED_API_KEY.
+  // BRAVE_SEARCH_API_KEY, PAGESPEED_API_KEY, LEAD_EMAIL_SMTP_USER, LEAD_EMAIL_SMTP_PASSWORD,
+  // UNSUBSCRIBE_SECRET (same value as BWE).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "growth-intelligence",
   "main": "src/server.ts",
