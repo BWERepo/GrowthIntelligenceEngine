@@ -3,10 +3,12 @@
 Discovers business opportunities, recommends the day's most valuable actions, reviews what got done, and measures
 whether the business is actually growing.
 
-**Status:** Phase 1 (app setup and multi-tenant foundation) in review.
+**Status:** Phase 1 (app setup and multi-tenant foundation) merged and on staging. Phase 2 (discovery and scoring) in review.
 
 - Plan and decisions: [`docs/growth-intelligence-discovery.md`](docs/growth-intelligence-discovery.md)
 - Setting up staging: [`docs/setup.md`](docs/setup.md)
+- How discovery and the Opportunity Score work: [`docs/growth-intelligence/discovery.md`](docs/growth-intelligence/discovery.md)
+- Search provider comparison: [`docs/growth-intelligence/search-providers.md`](docs/growth-intelligence/search-providers.md)
 - Working on the code: [`CLAUDE.md`](CLAUDE.md)
 
 ## Commands

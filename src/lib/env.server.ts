@@ -11,6 +11,12 @@ const EnvSchema = z
     GIE_DB_SCHEMA: z.enum(["gie_staging", "gie_prod"]),
     BWE_DB_SCHEMA: z.enum(["bwe_staging", "public"]),
     BWE_TENANT_SLUG: z.string().default("bwe"),
+    // Phase 2 providers. Optional: without a key that step is skipped and the
+    // run says which key is missing; nothing is faked.
+    ANTHROPIC_API_KEY: z.string().min(20).optional(),
+    BRAVE_SEARCH_API_KEY: z.string().min(10).optional(),
+    PAGESPEED_API_KEY: z.string().min(10).optional(),
+    GIE_CLASSIFY_MODEL: z.enum(["claude-opus-5-5", "claude-haiku-5-5"]).default("claude-opus-5-5"),
   })
   .refine((e) => (e.GIE_DB_SCHEMA === "gie_prod") === (e.BWE_DB_SCHEMA === "public"), {
     message: "GIE_DB_SCHEMA and BWE_DB_SCHEMA must both be staging or both be production",
@@ -19,8 +25,9 @@ const EnvSchema = z
 export type ServerEnv = z.infer<typeof EnvSchema>;
 
 export function readServerEnv(source: Record<string, string | undefined> = process.env): ServerEnv {
+  const blankToUndefined = Object.fromEntries(Object.entries(source).map(([k, v]) => [k, v === "" ? undefined : v]));
   const parsed = EnvSchema.safeParse({
-    ...source,
+    ...blankToUndefined,
     // The browser build reads the same URL and key as VITE_ vars; accept either name.
     SUPABASE_URL: source.SUPABASE_URL ?? source.VITE_SUPABASE_URL,
     SUPABASE_PUBLISHABLE_KEY: source.SUPABASE_PUBLISHABLE_KEY ?? source.VITE_SUPABASE_PUBLISHABLE_KEY,

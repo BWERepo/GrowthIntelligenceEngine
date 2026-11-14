@@ -74,3 +74,32 @@ export function dueDailyJobs(
     .filter(([job, at]) => local.minutes >= toMinutes(at) && !alreadyRun.some((r) => r.job === job && r.localDate === local.date))
     .map(([job, at]) => ({ job, localDate: local.date, late: local.minutes - toMinutes(at) > lateAfterMinutes }));
 }
+
+/**
+ * The UTC instant at which local date `localDate` ("YYYY-MM-DD") begins in
+ * `timezone`. Two passes of the offset correction handle DST changes.
+ */
+export function startOfLocalDayUtc(localDate: string, timezone: string): Date {
+  const [y, m, d] = localDate.split("-").map(Number) as [number, number, number];
+  const target = Date.UTC(y, m - 1, d);
+  let guess = target;
+  for (let i = 0; i < 2; i++) {
+    const local = localMoment(new Date(guess), timezone);
+    const [ly, lm, ld] = local.date.split("-").map(Number) as [number, number, number];
+    const shownAsUtc = Date.UTC(ly, lm - 1, ld) + local.minutes * 60_000;
+    guess += target - shownAsUtc;
+  }
+  return new Date(guess);
+}
+
+/** The UTC instant at which the tenant-local month containing `now` began (for monthly budgets). */
+export function startOfLocalMonthUtc(now: Date, timezone: string): Date {
+  const local = localMoment(now, timezone);
+  return startOfLocalDayUtc(`${local.date.slice(0, 7)}-01`, timezone);
+}
+
+/** Overnight discovery window, tenant-local: searches start at 02:00 and may start until 06:00. */
+export function inDiscoveryWindow(now: Date, timezone: string, startMinutes = 120, endMinutes = 360): boolean {
+  const { minutes } = localMoment(now, timezone);
+  return minutes >= startMinutes && minutes < endMinutes;
+}
