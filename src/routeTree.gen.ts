@@ -21,6 +21,7 @@ import { Route as AppProspectsRouteImport } from './routes/_app/prospects'
 import { Route as AppReportsRouteImport } from './routes/_app/reports'
 import { Route as AppReviewRouteImport } from './routes/_app/review'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppWorkspacesRouteImport } from './routes/_app/workspaces'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -81,6 +82,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
+const AppWorkspacesRoute = AppWorkspacesRouteImport.update({
+  id: '/workspaces',
+  path: '/workspaces',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -94,6 +100,7 @@ export interface FileRoutesByFullPath {
   '/reports': typeof AppReportsRoute
   '/review': typeof AppReviewRoute
   '/settings': typeof AppSettingsRoute
+  '/workspaces': typeof AppWorkspacesRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
@@ -106,6 +113,7 @@ export interface FileRoutesByTo {
   '/reports': typeof AppReportsRoute
   '/review': typeof AppReviewRoute
   '/settings': typeof AppSettingsRoute
+  '/workspaces': typeof AppWorkspacesRoute
   '/': typeof AppIndexRoute
 }
 export interface FileRoutesById {
@@ -121,6 +129,7 @@ export interface FileRoutesById {
   '/_app/reports': typeof AppReportsRoute
   '/_app/review': typeof AppReviewRoute
   '/_app/settings': typeof AppSettingsRoute
+  '/_app/workspaces': typeof AppWorkspacesRoute
   '/_app/': typeof AppIndexRoute
 }
 export interface FileRouteTypes {
@@ -137,6 +146,7 @@ export interface FileRouteTypes {
     | '/reports'
     | '/review'
     | '/settings'
+    | '/workspaces'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/sign-in'
@@ -149,6 +159,7 @@ export interface FileRouteTypes {
     | '/reports'
     | '/review'
     | '/settings'
+    | '/workspaces'
     | '/'
   id:
     | '__root__'
@@ -163,6 +174,7 @@ export interface FileRouteTypes {
     | '/_app/reports'
     | '/_app/review'
     | '/_app/settings'
+    | '/_app/workspaces'
     | '/_app/'
   fileRoutesById: FileRoutesById
 }
@@ -257,6 +269,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/workspaces': {
+      id: '/_app/workspaces'
+      path: '/workspaces'
+      fullPath: '/workspaces'
+      preLoaderRoute: typeof AppWorkspacesRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
@@ -270,6 +289,7 @@ interface AppRouteChildren {
   AppReportsRoute: typeof AppReportsRoute
   AppReviewRoute: typeof AppReviewRoute
   AppSettingsRoute: typeof AppSettingsRoute
+  AppWorkspacesRoute: typeof AppWorkspacesRoute
   AppIndexRoute: typeof AppIndexRoute
 }
 
@@ -283,6 +303,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppReportsRoute: AppReportsRoute,
   AppReviewRoute: AppReviewRoute,
   AppSettingsRoute: AppSettingsRoute,
+  AppWorkspacesRoute: AppWorkspacesRoute,
   AppIndexRoute: AppIndexRoute,
 }
 

@@ -4,6 +4,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ServerEnv } from "@/lib/env.server";
 import { bweReader } from "@/lib/bwe-source.server";
+import { effectiveSendCap } from "@/lib/agency/rules";
 import { checkSuppression } from "@/lib/actions/suppression.server";
 import { validateDraft } from "@/lib/actions/draft-validator";
 import { composeOutreach, formatMailingAddress } from "@/lib/actions/outreach-message";
@@ -68,7 +69,11 @@ export async function sendApprovedDraft(
   const since = new Date(now.getTime() - 86_400_000).toISOString();
   const sentToday = await db.from("gie_outreach_drafts").select("id", { count: "exact", head: true }).eq("tenant_id", tenant.id).gte("sent_at", since);
   if (sentToday.error) throw new Error(sentToday.error.message);
-  if ((sentToday.count ?? 0) >= env.GIE_DAILY_SEND_CAP) return { ok: false, reason: `The daily limit of ${env.GIE_DAILY_SEND_CAP} sent emails is reached. Try again tomorrow.` };
+  // The app-wide cap always applies; a workspace's own limit can only be lower.
+  const quota = await db.from("gie_tenant_quotas").select("daily_send_cap").eq("tenant_id", tenant.id).maybeSingle();
+  if (quota.error) throw new Error(quota.error.message);
+  const cap = effectiveSendCap(env.GIE_DAILY_SEND_CAP, quota.data?.daily_send_cap);
+  if ((sentToday.count ?? 0) >= cap) return { ok: false, reason: `The daily limit of ${cap} sent emails is reached. Try again tomorrow.` };
 
   // BWE's mailing address (never the physical address), read-only.
   const biz = await bweReader(env).from("business_settings").select("mailing_address, mailing_city, mailing_state, mailing_zip").limit(1).maybeSingle();

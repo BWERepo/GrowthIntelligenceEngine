@@ -20,6 +20,7 @@ export const NAV = [
   { to: "/improvements", label: "Improvements" },
   { to: "/reports", label: "Reports" },
   { to: "/settings", label: "Settings" },
+  { to: "/workspaces", label: "Workspaces", platformAdminOnly: true },
 ] as const;
 
 export const Route = createFileRoute("/_app")({
@@ -87,7 +88,7 @@ function AppLayout() {
           </div>
           <nav id="app-nav" aria-label="Growth Intelligence" className={`${menuOpen ? "block" : "hidden"} px-2 pb-4 lg:block`}>
             <ul className="space-y-0.5">
-              {NAV.map((item) => (
+              {NAV.filter((item) => !("platformAdminOnly" in item) || ws.isPlatformAdmin).map((item) => (
                 <li key={item.to}>
                   <Link
                     to={item.to}

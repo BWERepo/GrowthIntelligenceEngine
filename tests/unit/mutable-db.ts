@@ -11,7 +11,7 @@ export function mutableDb(tables: Record<string, Row[]>, defaults: Record<string
     from(table: string) {
       tables[table] ??= [];
       const filters: Array<(r: Row) => boolean> = [];
-      let mode: "select" | "update" | "insert" | "upsert" = "select";
+      let mode: "select" | "update" | "insert" | "upsert" | "delete" = "select";
       let patch: any = {};
       let upsertOpts: { onConflict?: string; ignoreDuplicates?: boolean } = {};
       let head = false;
@@ -39,6 +39,10 @@ export function mutableDb(tables: Record<string, Row[]>, defaults: Record<string
           return { data: wantRows ? out : null, error: null, count: null };
         }
         const rows = matched();
+        if (mode === "delete") {
+          tables[table] = tables[table]!.filter((r) => !rows.includes(r));
+          return { data: null, error: null, count: null };
+        }
         if (mode === "update") {
           for (const r of rows) Object.assign(r, patch);
           return { data: wantRows ? rows.map((r) => ({ ...r })) : null, error: null, count: null };
@@ -59,6 +63,7 @@ export function mutableDb(tables: Record<string, Row[]>, defaults: Record<string
         order: () => b,
         limit: () => b,
         range: () => b,
+        delete: () => ((mode = "delete"), b),
         update: (p: Row) => ((mode = "update"), (patch = p), b),
         insert: (p: Row | Row[]) => ((mode = "insert"), (patch = p), b),
         upsert: (p: Row | Row[], o?: { onConflict?: string; ignoreDuplicates?: boolean }) => ((mode = "upsert"), (patch = p), (upsertOpts = o ?? {}), b),

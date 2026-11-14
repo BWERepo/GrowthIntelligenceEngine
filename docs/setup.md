@@ -147,3 +147,10 @@ do-not-contact.
 
 1. **Database.** Render and run `supabase/migrations/20261120120000_gie_recommendations.sql` on staging after the Phase 6 one. No new keys.
 2. **Check.** The Improvements page lists suggestions once recorded results support one. Details: `docs/growth-intelligence/improvements.md`.
+
+## 12. Phase 8: Agency readiness
+
+1. **Database.** Render and run `supabase/migrations/20261121120000_gie_agency.sql` on staging after the Phase 7 one. It makes
+   suspension work in the database, and adds per-workspace limits. No new keys.
+2. **Before any real client:** split staging into its own Supabase project and settle the questions in
+   `docs/growth-intelligence/agency-readiness.md`. Then create the first client workspace on the Workspaces page.
