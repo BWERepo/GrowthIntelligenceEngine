@@ -871,4 +871,101 @@ EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - each event earns points 
 END $$;
 RESET ROLE;
 
+-- ================================================================ Phase 6: 30-Day Growth Performance
+INSERT INTO gie_staging.gie_sales_funnel_events (tenant_id, stage, occurred_at, source_table, source_id, prospect_id, attribution, attribution_confidence, attribution_basis)
+  SELECT tenant_id, 'lead', now(), 'leads', gen_random_uuid(), id, 'first_touch', 'high', 'The lead is linked to this prospect.' FROM gie_staging.gie_prospects;
+INSERT INTO gie_staging.gie_revenue_events (tenant_id, payment_id, paid_at, kind, amount_cents, currency)
+  SELECT tenant_id, gen_random_uuid(), now(), 'deposit', 50000, 'usd' FROM gie_staging.gie_prospects;
+INSERT INTO gie_staging.gie_growth_period_snapshots (tenant_id, as_of_date, window_days, min_events, report)
+  SELECT id, '2026-11-18', 30, 10, '{}'::jsonb FROM gie_staging.gie_tenants;
+
+SET ROLE authenticated;
+-- 27. Outcomes and frozen reports are per workspace and read-only for everyone signed in.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) FROM gie_staging.gie_sales_funnel_events WHERE tenant_id <> current_setting('test.b_id')::uuid) = 0
+  AND (SELECT count(*) FROM gie_staging.gie_revenue_events WHERE tenant_id <> current_setting('test.b_id')::uuid) = 0
+  AND (SELECT count(*) FROM gie_staging.gie_growth_period_snapshots) = 1, 'tenant B owner sees only tenant B outcomes and reports');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) >= 1 FROM gie_staging.gie_sales_funnel_events) AND (SELECT count(*) >= 1 FROM gie_staging.gie_revenue_events), 'viewer reads outcomes');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
+SELECT pg_temp.expect((SELECT count(*) FROM gie_staging.gie_sales_funnel_events) = 0 AND (SELECT count(*) FROM gie_staging.gie_revenue_events) = 0
+  AND (SELECT count(*) FROM gie_staging.gie_growth_period_snapshots) = 0, 'BWE customer sees no outcomes');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000d1');
+SELECT pg_temp.expect((SELECT count(*) FROM gie_staging.gie_growth_period_snapshots) = 0, 'other site''s user sees no growth reports');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_revenue_events (tenant_id, payment_id, paid_at, kind, amount_cents, currency)
+  VALUES (current_setting('test.bwe_id')::uuid, gen_random_uuid(), now(), 'deposit', 1, 'usd');
+  RAISE EXCEPTION 'FAILED: owner recorded revenue';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - revenue is recorded only by the server';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_growth_period_snapshots SET report = '{"edited":true}';
+  RAISE EXCEPTION 'FAILED: owner edited a report';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - users cannot edit a frozen report';
+END $$;
+RESET ROLE;
+
+SET ROLE service_role;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_sales_funnel_events SET occurred_at = now() - interval '1 day';
+  RAISE EXCEPTION 'FAILED: outcome date rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - when an outcome happened cannot be rewritten';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_revenue_events SET amount_cents = 1;
+  RAISE EXCEPTION 'FAILED: revenue amount rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - a revenue amount cannot be rewritten';
+END $$;
+DO $$ BEGIN
+  DELETE FROM gie_staging.gie_sales_funnel_events;
+  RAISE EXCEPTION 'FAILED: outcome deleted';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - recorded outcomes cannot be deleted';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_growth_period_snapshots SET report = '{}';
+  RAISE EXCEPTION 'FAILED: report rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - a frozen report cannot be rewritten, even by the server';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_growth_period_snapshots (tenant_id, as_of_date, window_days, min_events, report)
+  VALUES (current_setting('test.bwe_id')::uuid, '2026-11-18', 30, 10, '{}');
+  RAISE EXCEPTION 'FAILED: second report for one date';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one frozen report per workspace per date';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_revenue_events (tenant_id, payment_id, paid_at, kind, amount_cents, currency)
+  SELECT tenant_id, payment_id, paid_at, kind, amount_cents, currency FROM gie_staging.gie_revenue_events LIMIT 1;
+  RAISE EXCEPTION 'FAILED: one payment counted twice';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - a payment is revenue once';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_sales_funnel_events (tenant_id, stage, occurred_at, source_table, source_id)
+  SELECT tenant_id, stage, occurred_at, source_table, source_id FROM gie_staging.gie_sales_funnel_events LIMIT 1;
+  RAISE EXCEPTION 'FAILED: one source row counted twice';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one source row yields one event per stage';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_sales_funnel_events (tenant_id, stage, occurred_at, source_table, source_id, attribution, attribution_confidence, attribution_basis)
+  VALUES (current_setting('test.bwe_id')::uuid, 'lead', now(), 'leads', gen_random_uuid(), 'first_touch', 'none', 'x');
+  RAISE EXCEPTION 'FAILED: attributed with no confidence';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - unknown attribution and no confidence go together';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_sales_funnel_events (tenant_id, stage, occurred_at, source_table, source_id, attribution, attribution_confidence)
+  VALUES (current_setting('test.bwe_id')::uuid, 'lead', now(), 'leads', gen_random_uuid(), 'assisted', 'medium');
+  RAISE EXCEPTION 'FAILED: attribution without a basis';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - an attribution always says how it was found';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_sales_funnel_events (tenant_id, stage, occurred_at, source_table, source_id, prospect_id)
+  VALUES (current_setting('test.bwe_id')::uuid, 'lead', now(), 'leads', gen_random_uuid(), (SELECT id FROM gie_staging.gie_prospects WHERE tenant_id = current_setting('test.b_id')::uuid LIMIT 1));
+  RAISE EXCEPTION 'FAILED: outcome pointed at another tenant''s prospect';
+EXCEPTION WHEN foreign_key_violation THEN RAISE NOTICE 'ok - an outcome cannot point at another tenant''s prospect';
+END $$;
+-- A link that appears later may refresh the attribution, and only the attribution.
+UPDATE gie_staging.gie_sales_funnel_events SET attribution = 'assisted', attribution_confidence = 'medium', attribution_basis = 'Refreshed.' WHERE tenant_id = current_setting('test.bwe_id')::uuid;
+SELECT pg_temp.expect((SELECT bool_and(attribution = 'assisted') FROM gie_staging.gie_sales_funnel_events WHERE tenant_id = current_setting('test.bwe_id')::uuid), 'attribution can be refreshed when a link appears');
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;
