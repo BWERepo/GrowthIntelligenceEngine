@@ -968,4 +968,98 @@ UPDATE gie_staging.gie_sales_funnel_events SET attribution = 'assisted', attribu
 SELECT pg_temp.expect((SELECT bool_and(attribution = 'assisted') FROM gie_staging.gie_sales_funnel_events WHERE tenant_id = current_setting('test.bwe_id')::uuid), 'attribution can be refreshed when a link appears');
 RESET ROLE;
 
+-- ================================================================ Phase 7: continuous improvement
+INSERT INTO gie_staging.gie_recommendations (tenant_id, rule_key, subject_key, title, rationale, evidence, metric)
+  SELECT id, 'growth_flag', 'A', 'Review who the outreach is going to', 'Why.', '[{"label":"l","value":"v","source":"s"}]'::jsonb, 'lead' FROM gie_staging.gie_tenants;
+SELECT FROM (SELECT set_config('test.bwe_rec', r.id::text, false) FROM gie_staging.gie_recommendations r WHERE r.tenant_id = current_setting('test.bwe_id')::uuid) x;
+
+SET ROLE authenticated;
+-- 28. Suggestions are per workspace and read-only for everyone signed in.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) FROM gie_staging.gie_recommendations) = 1 AND (SELECT count(*) FROM gie_staging.gie_recommendations WHERE tenant_id <> current_setting('test.b_id')::uuid) = 0, 'tenant B owner sees only tenant B suggestions');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) FROM gie_staging.gie_recommendations) >= 1, 'viewer reads suggestions');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
+SELECT pg_temp.expect((SELECT count(*) FROM gie_staging.gie_recommendations) = 0, 'BWE customer sees no suggestions');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000d1');
+SELECT pg_temp.expect((SELECT count(*) FROM gie_staging.gie_recommendations) = 0, 'other site''s user sees no suggestions');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+DO $$ BEGIN
+  UPDATE gie_staging.gie_recommendations SET status = 'approved', decided_at = now();
+  RAISE EXCEPTION 'FAILED: owner approved directly';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - decisions go through the server, not straight into the table';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_recommendations (tenant_id, rule_key, subject_key, title, rationale, evidence, metric)
+  VALUES (current_setting('test.bwe_id')::uuid, 'growth_flag', 'B', 't', 'r', '[{"label":"l"}]', 'lead');
+  RAISE EXCEPTION 'FAILED: owner wrote a suggestion';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - suggestions are written only by the server';
+END $$;
+RESET ROLE;
+
+SET ROLE service_role;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_recommendations SET title = 'Something else';
+  RAISE EXCEPTION 'FAILED: suggestion rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - what was suggested cannot be rewritten';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_recommendations SET evidence = '[{"label":"fake"}]';
+  RAISE EXCEPTION 'FAILED: evidence rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - the evidence cannot be rewritten';
+END $$;
+DO $$ BEGIN
+  DELETE FROM gie_staging.gie_recommendations;
+  RAISE EXCEPTION 'FAILED: suggestion deleted';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - suggestions are never deleted';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_recommendations SET status = 'implemented', implemented_at = now(), decided_at = now(), baseline = '{"value":1}';
+  RAISE EXCEPTION 'FAILED: skipped approval';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a suggestion cannot be carried out before it is approved';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_recommendations SET status = 'approved';
+  RAISE EXCEPTION 'FAILED: approved without a decision time';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - an approval always has a time';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_recommendations (tenant_id, rule_key, subject_key, title, rationale, evidence, metric)
+  VALUES (current_setting('test.bwe_id')::uuid, 'growth_flag', 'A', 't', 'r', '[{"label":"l"}]', 'lead');
+  RAISE EXCEPTION 'FAILED: two open suggestions for one subject';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one open suggestion per rule and subject';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_recommendations (tenant_id, rule_key, subject_key, title, rationale, evidence, metric)
+  VALUES (current_setting('test.bwe_id')::uuid, 'growth_flag', 'Z', 't', 'r', '[]', 'lead');
+  RAISE EXCEPTION 'FAILED: suggestion without evidence';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a suggestion must carry evidence';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_recommendations (tenant_id, rule_key, subject_key, title, rationale, evidence, metric, campaign_id)
+  VALUES (current_setting('test.bwe_id')::uuid, 'growth_flag', 'Y', 't', 'r', '[{"label":"l"}]', 'lead', gen_random_uuid());
+  RAISE EXCEPTION 'FAILED: suggestion pointed at a missing campaign';
+EXCEPTION WHEN foreign_key_violation THEN RAISE NOTICE 'ok - a suggestion cannot point at a campaign outside the workspace';
+END $$;
+-- The honest path: approve, carry out with a baseline, measure once.
+UPDATE gie_staging.gie_recommendations SET status = 'approved', decided_at = now() WHERE id = current_setting('test.bwe_rec')::uuid;
+UPDATE gie_staging.gie_recommendations SET status = 'implemented', implemented_at = now(), baseline = '{"value":3}' WHERE id = current_setting('test.bwe_rec')::uuid;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_recommendations SET baseline = '{"value":99}' WHERE id = current_setting('test.bwe_rec')::uuid;
+  RAISE EXCEPTION 'FAILED: baseline rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - the baseline cannot be changed after the fact';
+END $$;
+UPDATE gie_staging.gie_recommendations SET outcome = '{"verdict":"improved"}', outcome_at = now() WHERE id = current_setting('test.bwe_rec')::uuid;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_recommendations SET outcome = '{"verdict":"worse"}' WHERE id = current_setting('test.bwe_rec')::uuid;
+  RAISE EXCEPTION 'FAILED: outcome rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - a measured outcome is written once';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_recommendations SET status = 'rejected' WHERE id = current_setting('test.bwe_rec')::uuid;
+  RAISE EXCEPTION 'FAILED: carried-out suggestion rejected';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a carried-out suggestion cannot be un-done in the record';
+END $$;
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;
