@@ -33,3 +33,10 @@ export async function requireTenantRole(
   if (!hasRole(tenant.role, minimum)) throw new Error(`Forbidden: this needs the ${minimum} role or higher.`);
   return tenant;
 }
+
+/** Platform-admin check (BWE back-office admins, 2FA enforced by BWE's own has_role). Read through the caller's token. */
+export async function requirePlatformAdmin(db: SupabaseClient<any, any, any>): Promise<void> {
+  const { data, error } = await db.rpc("is_platform_admin");
+  if (error) throw new Error(error.message);
+  if (data !== true) throw new Error("Forbidden: this needs a platform administrator.");
+}

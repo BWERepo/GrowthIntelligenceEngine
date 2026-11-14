@@ -1062,4 +1062,84 @@ EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a carried-out suggestion 
 END $$;
 RESET ROLE;
 
+-- ================================================================ Phase 8: agency readiness
+-- 29. Structural checks that apply to every GIE table, present and future.
+DO $$
+DECLARE r record; bad text := '';
+BEGIN
+  FOR r IN SELECT c.oid, c.relname, c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'gie_staging' AND c.relkind = 'r' LOOP
+    IF NOT r.relrowsecurity THEN bad := bad || ' no-RLS:' || r.relname; END IF;
+    IF r.relname <> 'gie_tenants' AND NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = r.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped) THEN
+      bad := bad || ' no-tenant_id:' || r.relname;
+    END IF;
+  END LOOP;
+  IF bad <> '' THEN RAISE EXCEPTION 'FAILED: tables without isolation:%', bad; END IF;
+  RAISE NOTICE 'ok - every GIE table has RLS and a tenant_id';
+END $$;
+DO $$
+DECLARE r record; bad text := '';
+BEGIN
+  -- No policy may let a role in on "signed in" alone: each must go through has_tenant_role.
+  FOR r IN SELECT tablename, policyname, qual, with_check FROM pg_policies WHERE schemaname = 'gie_staging' LOOP
+    IF coalesce(r.qual, '') NOT LIKE '%has_tenant_role%' AND coalesce(r.with_check, '') NOT LIKE '%has_tenant_role%' THEN
+      bad := bad || ' ' || r.tablename || '/' || r.policyname;
+    END IF;
+  END LOOP;
+  IF bad <> '' THEN RAISE EXCEPTION 'FAILED: policies not tied to has_tenant_role:%', bad; END IF;
+  RAISE NOTICE 'ok - every policy goes through has_tenant_role';
+END $$;
+
+-- 30. A suspended workspace stops working for its members, and a platform admin keeps access.
+UPDATE gie_staging.gie_tenants SET status = 'suspended' WHERE slug = 'client-b';
+SET ROLE authenticated;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_tenants) AND (SELECT count(*) = 0 FROM gie_staging.gie_prospects)
+  AND (SELECT count(*) = 0 FROM gie_staging.gie_recommendations) AND (SELECT count(*) = 0 FROM gie_staging.gie_growth_period_snapshots), 'a suspended workspace''s owner sees nothing');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-00000000000a', 'aal2');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_tenants WHERE slug = 'client-b'), 'a platform admin can still see a suspended workspace');
+RESET ROLE;
+UPDATE gie_staging.gie_tenants SET status = 'active' WHERE slug = 'client-b';
+SET ROLE authenticated;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_tenants), 'reactivating restores access');
+RESET ROLE;
+
+-- 31. Limits are enforced by the database.
+SELECT FROM (SELECT set_config('test.b_id2', id::text, false) FROM gie_staging.gie_tenants WHERE slug = 'client-b') x;
+INSERT INTO gie_staging.gie_tenant_quotas (tenant_id, max_active_campaigns, max_members, daily_send_cap)
+  VALUES (current_setting('test.b_id2')::uuid, 3, 1, 5) ON CONFLICT (tenant_id) DO UPDATE SET max_active_campaigns = 3, max_members = 1, daily_send_cap = 5;
+SET ROLE service_role;
+INSERT INTO gie_staging.gie_campaigns (tenant_id, name, status) VALUES (current_setting('test.b_id2')::uuid, 'q1', 'active'), (current_setting('test.b_id2')::uuid, 'q2', 'active');
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_campaigns (tenant_id, name, status) VALUES (current_setting('test.b_id2')::uuid, 'q3', 'active');
+  RAISE EXCEPTION 'FAILED: third active campaign allowed';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - the active campaign limit is enforced';
+END $$;
+INSERT INTO gie_staging.gie_campaigns (tenant_id, name, status) VALUES (current_setting('test.b_id2')::uuid, 'q-draft', 'draft');
+DO $$ BEGIN
+  UPDATE gie_staging.gie_campaigns SET status = 'active' WHERE name = 'q-draft';
+  RAISE EXCEPTION 'FAILED: draft activated past the limit';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - activating a draft counts against the limit too';
+END $$;
+UPDATE gie_staging.gie_campaigns SET status = 'paused' WHERE name = 'q1';
+UPDATE gie_staging.gie_campaigns SET status = 'active' WHERE name = 'q-draft';
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_tenant_memberships (tenant_id, user_id, role) VALUES (current_setting('test.b_id2')::uuid, '00000000-0000-0000-0000-0000000000a2', 'viewer');
+  RAISE EXCEPTION 'FAILED: member limit ignored';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - the team size limit is enforced';
+END $$;
+RESET ROLE;
+SET ROLE authenticated;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT daily_send_cap = 5 FROM gie_staging.gie_tenant_quotas), 'members can read their own limits');
+DO $$ BEGIN
+  UPDATE gie_staging.gie_tenant_quotas SET max_members = 100;
+  RAISE EXCEPTION 'FAILED: owner raised their own limit';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - a workspace cannot raise its own limits';
+END $$;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_tenant_quotas WHERE tenant_id = current_setting('test.bwe_id')::uuid) AND (SELECT count(*) = 0 FROM gie_staging.gie_tenant_quotas WHERE tenant_id = current_setting('test.b_id2')::uuid), 'limits are visible only to their own workspace');
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;
