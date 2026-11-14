@@ -14,6 +14,7 @@ import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppCampaignsRouteImport } from './routes/_app/campaigns'
 import { Route as AppFollowUpsRouteImport } from './routes/_app/follow-ups'
+import { Route as AppImprovementsRouteImport } from './routes/_app/improvements'
 import { Route as AppOpportunitiesRouteImport } from './routes/_app/opportunities'
 import { Route as AppPerformanceRouteImport } from './routes/_app/performance'
 import { Route as AppProspectsRouteImport } from './routes/_app/prospects'
@@ -43,6 +44,11 @@ const AppCampaignsRoute = AppCampaignsRouteImport.update({
 const AppFollowUpsRoute = AppFollowUpsRouteImport.update({
   id: '/follow-ups',
   path: '/follow-ups',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppImprovementsRoute = AppImprovementsRouteImport.update({
+  id: '/improvements',
+  path: '/improvements',
   getParentRoute: () => AppRoute,
 } as any)
 const AppOpportunitiesRoute = AppOpportunitiesRouteImport.update({
@@ -81,6 +87,7 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof SignInRoute
   '/campaigns': typeof AppCampaignsRoute
   '/follow-ups': typeof AppFollowUpsRoute
+  '/improvements': typeof AppImprovementsRoute
   '/opportunities': typeof AppOpportunitiesRoute
   '/performance': typeof AppPerformanceRoute
   '/prospects': typeof AppProspectsRoute
@@ -92,6 +99,7 @@ export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
   '/campaigns': typeof AppCampaignsRoute
   '/follow-ups': typeof AppFollowUpsRoute
+  '/improvements': typeof AppImprovementsRoute
   '/opportunities': typeof AppOpportunitiesRoute
   '/performance': typeof AppPerformanceRoute
   '/prospects': typeof AppProspectsRoute
@@ -106,6 +114,7 @@ export interface FileRoutesById {
   '/sign-in': typeof SignInRoute
   '/_app/campaigns': typeof AppCampaignsRoute
   '/_app/follow-ups': typeof AppFollowUpsRoute
+  '/_app/improvements': typeof AppImprovementsRoute
   '/_app/opportunities': typeof AppOpportunitiesRoute
   '/_app/performance': typeof AppPerformanceRoute
   '/_app/prospects': typeof AppProspectsRoute
@@ -121,6 +130,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/campaigns'
     | '/follow-ups'
+    | '/improvements'
     | '/opportunities'
     | '/performance'
     | '/prospects'
@@ -132,6 +142,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/campaigns'
     | '/follow-ups'
+    | '/improvements'
     | '/opportunities'
     | '/performance'
     | '/prospects'
@@ -145,6 +156,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/_app/campaigns'
     | '/_app/follow-ups'
+    | '/_app/improvements'
     | '/_app/opportunities'
     | '/_app/performance'
     | '/_app/prospects'
@@ -196,6 +208,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppFollowUpsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/improvements': {
+      id: '/_app/improvements'
+      path: '/improvements'
+      fullPath: '/improvements'
+      preLoaderRoute: typeof AppImprovementsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/opportunities': {
       id: '/_app/opportunities'
       path: '/opportunities'
@@ -244,6 +263,7 @@ declare module '@tanstack/react-router' {
 interface AppRouteChildren {
   AppCampaignsRoute: typeof AppCampaignsRoute
   AppFollowUpsRoute: typeof AppFollowUpsRoute
+  AppImprovementsRoute: typeof AppImprovementsRoute
   AppOpportunitiesRoute: typeof AppOpportunitiesRoute
   AppPerformanceRoute: typeof AppPerformanceRoute
   AppProspectsRoute: typeof AppProspectsRoute
@@ -256,6 +276,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppCampaignsRoute: AppCampaignsRoute,
   AppFollowUpsRoute: AppFollowUpsRoute,
+  AppImprovementsRoute: AppImprovementsRoute,
   AppOpportunitiesRoute: AppOpportunitiesRoute,
   AppPerformanceRoute: AppPerformanceRoute,
   AppProspectsRoute: AppProspectsRoute,

@@ -142,3 +142,8 @@ do-not-contact.
    leads, meetings, proposals, agreements, payments and site visits (read only); other workspaces show their own outreach
    only and say the rest is not connected. After 06:00 local time one report per day is frozen. Details:
    `docs/growth-intelligence/growth-performance.md`.
+
+## 11. Phase 7: Continuous improvement
+
+1. **Database.** Render and run `supabase/migrations/20261120120000_gie_recommendations.sql` on staging after the Phase 6 one. No new keys.
+2. **Check.** The Improvements page lists suggestions once recorded results support one. Details: `docs/growth-intelligence/improvements.md`.

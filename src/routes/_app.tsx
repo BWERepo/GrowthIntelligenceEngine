@@ -17,6 +17,7 @@ export const NAV = [
   { to: "/review", label: "End-of-Day Review" },
   { to: "/performance", label: "Growth Performance" },
   { to: "/campaigns", label: "Campaigns" },
+  { to: "/improvements", label: "Improvements" },
   { to: "/reports", label: "Reports" },
   { to: "/settings", label: "Settings" },
 ] as const;
