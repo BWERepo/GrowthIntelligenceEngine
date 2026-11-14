@@ -30,7 +30,7 @@ function must<T>(r: { data: T; error: { message: string } | null }): T {
   return r.data;
 }
 
-async function loadSchedule(db: Db, tenant: TenantRow): Promise<WorkSchedule> {
+export async function loadSchedule(db: Db, tenant: TenantRow): Promise<WorkSchedule> {
   const [s, c] = await Promise.all([
     db.from("gie_tenant_work_schedules").select("working_days, morning_time, evening_time").eq("tenant_id", tenant.id).maybeSingle(),
     db.from("gie_business_calendar").select("closed_on").eq("tenant_id", tenant.id),
@@ -80,12 +80,13 @@ export async function runMorningPackage(db: Db, env: ServerEnv, tenant: TenantRo
   }
 }
 
-async function buildPackage(db: Db, env: ServerEnv, tenant: TenantRow, localDate: string, late: boolean, now: Date): Promise<PackageResult> {
+/** What may be ranked on `localDate`: due follow-ups and open, scored, unheld opportunities. Shared by the morning package and the end-of-day plan for tomorrow. */
+export async function loadCandidates(db: Db, tenantId: string, localDate: string) {
   // Follow-ups due today or earlier, on prospects we may still contact.
-  const fuRows = (must(await db.from("gie_follow_up_tasks").select("id, prospect_id, due_date").eq("tenant_id", tenant.id).eq("status", "open").lte("due_date", localDate)) ?? []) as Array<{ id: string; prospect_id: string; due_date: string }>;
+  const fuRows = (must(await db.from("gie_follow_up_tasks").select("id, prospect_id, due_date").eq("tenant_id", tenantId).eq("status", "open").lte("due_date", localDate)) ?? []) as Array<{ id: string; prospect_id: string; due_date: string }>;
   const prospectIds = [...new Set(fuRows.map((f) => f.prospect_id))];
   const prospects = prospectIds.length
-    ? ((must(await db.from("gie_prospects").select("id, business_name, do_not_contact").eq("tenant_id", tenant.id).in("id", prospectIds)) ?? []) as Array<{ id: string; business_name: string; do_not_contact: boolean }>)
+    ? ((must(await db.from("gie_prospects").select("id, business_name, do_not_contact").eq("tenant_id", tenantId).in("id", prospectIds)) ?? []) as Array<{ id: string; business_name: string; do_not_contact: boolean }>)
     : [];
   const pById = new Map(prospects.map((p) => [p.id, p]));
   const followUps: FollowUpCandidate[] = fuRows.flatMap((f) => {
@@ -97,29 +98,29 @@ async function buildPackage(db: Db, env: ServerEnv, tenant: TenantRow, localDate
   const opps = (must(
     await db
       .from("gie_opportunities")
-      .select("id, business_name, website_url, signal_type, status, latest_score, source_id")
-      .eq("tenant_id", tenant.id)
+      .select("id, business_name, website_url, signal_type, status, latest_score, source_id, hold_until, priority_multiplier")
+      .eq("tenant_id", tenantId)
       .in("status", ["new", "saved", "pursuing"])
       .not("latest_score", "is", null)
       .order("latest_score", { ascending: false })
       .limit(50),
-  ) ?? []) as Array<{ id: string; business_name: string; website_url: string | null; signal_type: "buying_intent" | "prospecting"; status: "new" | "saved" | "pursuing"; latest_score: number; source_id: string }>;
+  ) ?? []) as Array<{ id: string; business_name: string; website_url: string | null; signal_type: "buying_intent" | "prospecting"; status: "new" | "saved" | "pursuing"; latest_score: number; source_id: string; hold_until: string | null; priority_multiplier: string | number }>;
   const oppIds = opps.map((o) => o.id);
 
   const [sources, carried, prospectsByOpp] = await Promise.all([
-    opps.length ? db.from("gie_sources").select("id, contact").eq("tenant_id", tenant.id).in("id", opps.map((o) => o.source_id)) : { data: [], error: null },
-    oppIds.length ? db.from("gie_daily_action_items").select("opportunity_id, status").eq("tenant_id", tenant.id).in("opportunity_id", oppIds) : { data: [], error: null },
-    oppIds.length ? db.from("gie_prospects").select("opportunity_id, do_not_contact").eq("tenant_id", tenant.id).in("opportunity_id", oppIds) : { data: [], error: null },
+    opps.length ? db.from("gie_sources").select("id, contact").eq("tenant_id", tenantId).in("id", opps.map((o) => o.source_id)) : { data: [], error: null },
+    oppIds.length ? db.from("gie_daily_action_items").select("opportunity_id, status").eq("tenant_id", tenantId).in("opportunity_id", oppIds) : { data: [], error: null },
+    oppIds.length ? db.from("gie_prospects").select("opportunity_id, do_not_contact").eq("tenant_id", tenantId).in("opportunity_id", oppIds) : { data: [], error: null },
   ]);
   const contactBySource = new Map(((must(sources as any) ?? []) as Array<{ id: string; contact: { emails?: string[] } | null }>).map((s) => [s.id, s.contact?.emails?.[0] ?? null]));
   const carries = new Map<string, number>();
   for (const it of (must(carried as any) ?? []) as Array<{ opportunity_id: string; status: string }>) {
-    if (it.status !== "completed" && it.status !== "awaiting_response") carries.set(it.opportunity_id, (carries.get(it.opportunity_id) ?? 0) + 1);
+    if (it.status !== "completed" && it.status !== "awaiting_response" && it.status !== "cancelled") carries.set(it.opportunity_id, (carries.get(it.opportunity_id) ?? 0) + 1);
   }
   const dnc = new Set(((must(prospectsByOpp as any) ?? []) as Array<{ opportunity_id: string; do_not_contact: boolean }>).filter((p) => p.do_not_contact).map((p) => p.opportunity_id));
 
   const urgencyRows = oppIds.length
-    ? ((must(await db.from("gie_opportunity_classifications").select("opportunity_id, output").eq("tenant_id", tenant.id).eq("outcome", "accepted").in("opportunity_id", oppIds)) ?? []) as Array<{ opportunity_id: string; output: { urgency?: string } | null }>)
+    ? ((must(await db.from("gie_opportunity_classifications").select("opportunity_id, output").eq("tenant_id", tenantId).eq("outcome", "accepted").in("opportunity_id", oppIds)) ?? []) as Array<{ opportunity_id: string; output: { urgency?: string } | null }>)
     : [];
   const urgencyBy = new Map(urgencyRows.map((r) => [r.opportunity_id, (r.output?.urgency as OpportunityCandidate["urgency"]) ?? "unknown"]));
 
@@ -135,7 +136,15 @@ async function buildPackage(db: Db, env: ServerEnv, tenant: TenantRow, localDate
     alreadyInTodaysPackage: false,
     doNotContact: dnc.has(o.id),
     timesCarried: carries.get(o.id) ?? 0,
+    holdUntil: o.hold_until,
+    priorityMultiplier: Number(o.priority_multiplier ?? 1),
   }));
+
+  return { followUps, candidates, opps, contactBySource };
+}
+
+async function buildPackage(db: Db, env: ServerEnv, tenant: TenantRow, localDate: string, late: boolean, now: Date): Promise<PackageResult> {
+  const { followUps, candidates, opps, contactBySource } = await loadCandidates(db, tenant.id, localDate);
 
   const ranked = rankCandidates(localDate, followUps, candidates);
   if (!ranked.length) {

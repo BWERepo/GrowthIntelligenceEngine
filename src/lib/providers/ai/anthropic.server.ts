@@ -144,3 +144,45 @@ export async function draftOutreach(apiKey: string, userPrompt: string): Promise
     return { kind: "error", detail: error instanceof Anthropic.APIError ? `API error ${error.status ?? ""}`.trim() : "draft request failed" };
   }
 }
+
+// ---------------------------------------------------------------- end-of-day assessment
+export const AssessmentOutput = z.object({
+  summary: z.string().describe("Three to five plain sentences about how the day went, from the facts only."),
+  went_well: z.array(z.string()).describe("Up to three things the record shows went well. Empty if none."),
+  needs_attention: z.array(z.string()).describe("Up to three things the record shows need attention. Empty if none."),
+  suggestion: z.string().describe("One practical suggestion for tomorrow based on the record, or an empty string."),
+});
+export type AssessmentOutput = z.infer<typeof AssessmentOutput>;
+
+export const ASSESSMENT_PROMPT_VERSION = "assessment-v1";
+
+export const ASSESSMENT_SYSTEM_PROMPT = `You write the owner's end-of-day note for Business Web Express's growth tool, from a JSON record of the day.
+
+Rules:
+- Use ONLY the facts in the record. Do not invent or estimate anything: no numbers, names, outcomes or reasons that are not in it. Write every count as digits exactly as given.
+- Do not score or grade the day, and do not predict results. Say what was planned, what was done, what was left, and what was decided.
+- If "dataComplete" is false or an item list is empty, say plainly that the record is thin instead of filling the gap.
+- Plain, calm, specific. No hype, no filler, no mention of AI.`;
+
+export type AssessmentResult =
+  | { kind: "assessment"; output: unknown; model: string; inputTokens: number; outputTokens: number; requestId: string | null }
+  | { kind: "error"; detail: string };
+
+export async function writeAssessment(apiKey: string, facts: unknown): Promise<AssessmentResult> {
+  const client = new Anthropic({ apiKey, maxRetries: 2, timeout: 120_000 });
+  try {
+    const response = await client.beta.messages.parse({
+      model: "claude-opus-5-5",
+      max_tokens: 2_000,
+      system: ASSESSMENT_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: `<record>\n${JSON.stringify(facts)}\n</record>\nWrite the note.` }],
+      output_config: { effort: "low", format: betaZodOutputFormat(AssessmentOutput) },
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default" as const,
+    });
+    if (response.stop_reason === "refusal") return { kind: "error", detail: "The model declined to write the note." };
+    return { kind: "assessment", output: response.parsed_output ?? null, model: response.model, inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens, requestId: response._request_id ?? null };
+  } catch (error) {
+    return { kind: "error", detail: error instanceof Anthropic.APIError ? `API error ${error.status ?? ""}`.trim() : "assessment request failed" };
+  }
+}

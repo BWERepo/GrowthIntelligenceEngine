@@ -622,4 +622,133 @@ END $$;
 UPDATE gie_staging.gie_outreach_drafts SET status = 'sent', sent_at = now(), sent_message_id = '<ok@y>' WHERE id = current_setting('test.bwe_draft')::uuid;
 RESET ROLE;
 
+
+-- ================================================================ Phase 4: End-of-Day Review
+INSERT INTO gie_staging.gie_end_of_day_reviews (tenant_id, local_date, package_id)
+  SELECT p.tenant_id, p.local_date, p.id FROM gie_staging.gie_daily_action_packages p;
+INSERT INTO gie_staging.gie_end_of_day_review_items (tenant_id, review_id, item_id, recorded_status, recommended_disposition)
+  SELECT r.tenant_id, r.id, i.id, 'not_started', 'carry_forward'
+  FROM gie_staging.gie_end_of_day_reviews r JOIN gie_staging.gie_daily_action_items i ON i.tenant_id = r.tenant_id AND i.package_id = r.package_id;
+INSERT INTO gie_staging.gie_ai_daily_assessments (tenant_id, review_id, summary, model, prompt_version, inputs_hash)
+  SELECT tenant_id, id, 'Planned 1 item.', 'claude-opus-5-5', 'assessment-v1', 'abc' FROM gie_staging.gie_end_of_day_reviews;
+SELECT FROM (SELECT set_config('test.bwe_review', r.id::text, false) FROM gie_staging.gie_end_of_day_reviews r
+  JOIN gie_staging.gie_tenants t ON t.id = r.tenant_id WHERE t.slug = 'bwe') x;
+SELECT FROM (SELECT set_config('test.bwe_review_item', r.id::text, false) FROM gie_staging.gie_end_of_day_review_items r
+  JOIN gie_staging.gie_tenants t ON t.id = r.tenant_id WHERE t.slug = 'bwe') x;
+SELECT FROM (SELECT set_config('test.b_item', i.id::text, false) FROM gie_staging.gie_daily_action_items i
+  JOIN gie_staging.gie_tenants t ON t.id = i.tenant_id WHERE t.slug = 'client-b') x;
+
+SET ROLE authenticated;
+-- 24. Reviews are per workspace.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_end_of_day_reviews) AND (SELECT count(*) = 1 FROM gie_staging.gie_end_of_day_review_items) AND (SELECT count(*) = 1 FROM gie_staging.gie_ai_daily_assessments), 'tenant B owner sees only tenant B reviews, items and assessments');
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_end_of_day_review_items SET disposition = 'dismiss', note = 'x' WHERE id = current_setting('test.bwe_review_item')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: tenant B owner changed a tenant A review item'; END IF;
+  RAISE NOTICE 'ok - tenant B owner cannot decide tenant A review items';
+END $$;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_end_of_day_reviews) AND (SELECT count(*) = 0 FROM gie_staging.gie_ai_daily_assessments), 'BWE customer sees no reviews');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000d1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_end_of_day_review_items), 'other site''s user sees no review items');
+
+-- 25. A viewer reads; an owner corrects and decides, but only those columns.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_end_of_day_reviews) AND (SELECT count(*) = 1 FROM gie_staging.gie_ai_daily_assessments), 'viewer reads the review and the assessment');
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_end_of_day_review_items SET note = 'x';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: viewer decided a review item'; END IF;
+  RAISE NOTICE 'ok - viewer cannot decide review items';
+END $$;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+UPDATE gie_staging.gie_end_of_day_review_items SET corrected_status = 'completed', disposition = 'carry_forward', note = 'done by phone' WHERE id = current_setting('test.bwe_review_item')::uuid;
+SELECT pg_temp.expect((SELECT corrected_status = 'completed' AND note = 'done by phone' FROM gie_staging.gie_end_of_day_review_items), 'owner can correct a status and decide');
+DO $$ BEGIN
+  UPDATE gie_staging.gie_end_of_day_review_items SET recorded_status = 'completed';
+  RAISE EXCEPTION 'FAILED: owner rewrote the recorded status';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - the recorded status cannot be rewritten';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_end_of_day_review_items SET applied_at = now();
+  RAISE EXCEPTION 'FAILED: owner marked a decision applied';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - applying a decision is a server act';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_end_of_day_reviews SET status = 'finalized', finalized_by = auth.uid(), finalized_at = now();
+  RAISE EXCEPTION 'FAILED: owner finalized a review directly';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - finalizing is a server act';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_ai_daily_assessments (tenant_id, review_id, summary, model, prompt_version, inputs_hash)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_review')::uuid, 'forged', 'm', 'v', 'h');
+  RAISE EXCEPTION 'FAILED: owner wrote an assessment';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - assessments are written only by the server';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_opportunities SET hold_until = '2027-01-01', priority_multiplier = 1;
+  RAISE EXCEPTION 'FAILED: owner placed a hold';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - holds and priority are set by the server only';
+END $$;
+RESET ROLE;
+
+SET ROLE service_role;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_end_of_day_reviews (tenant_id, local_date) SELECT tenant_id, local_date FROM gie_staging.gie_end_of_day_reviews LIMIT 1;
+  RAISE EXCEPTION 'FAILED: second review for one date';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one review per workspace per local date';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_end_of_day_review_items (tenant_id, review_id, item_id, recorded_status, recommended_disposition)
+  SELECT tenant_id, review_id, item_id, recorded_status, recommended_disposition FROM gie_staging.gie_end_of_day_review_items LIMIT 1;
+  RAISE EXCEPTION 'FAILED: an item reviewed twice';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - an item is reviewed once';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_end_of_day_review_items (tenant_id, review_id, item_id, recorded_status, recommended_disposition)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_review')::uuid, current_setting('test.b_item')::uuid, 'not_started', 'carry_forward');
+  RAISE EXCEPTION 'FAILED: tenant A review pointed at tenant B action';
+EXCEPTION WHEN foreign_key_violation THEN RAISE NOTICE 'ok - a review item cannot point at another tenant''s action';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_end_of_day_review_items SET disposition = 'block' WHERE id = current_setting('test.bwe_review_item')::uuid;
+  RAISE EXCEPTION 'FAILED: block without a date';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - reschedule and block need a date';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_opportunities SET hold_until = '2027-01-01';
+  RAISE EXCEPTION 'FAILED: hold without a reason';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a hold records its reason';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_end_of_day_reviews SET status = 'finalized' WHERE id = current_setting('test.bwe_review')::uuid;
+  RAISE EXCEPTION 'FAILED: finalized without who and when';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - finalizing records who and when';
+END $$;
+UPDATE gie_staging.gie_end_of_day_reviews SET status = 'finalized', finalized_by = '00000000-0000-0000-0000-0000000000a1', finalized_at = now()
+  WHERE id = current_setting('test.bwe_review')::uuid;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_end_of_day_reviews SET tomorrow_plan = '[]' WHERE id = current_setting('test.bwe_review')::uuid;
+  RAISE EXCEPTION 'FAILED: finalized review changed';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a finalized review is locked';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_end_of_day_review_items SET note = 'later' WHERE id = current_setting('test.bwe_review_item')::uuid;
+  RAISE EXCEPTION 'FAILED: finalized review item changed';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a finalized review''s items are locked';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_ai_daily_assessments SET summary = 'rewritten';
+  RAISE EXCEPTION 'FAILED: assessment rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - assessments cannot be rewritten';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_ai_daily_assessments (tenant_id, review_id, summary, model, prompt_version, inputs_hash)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_review')::uuid, 'second', 'm', 'v', 'h');
+  RAISE EXCEPTION 'FAILED: two assessments for one review';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one assessment per review';
+END $$;
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;

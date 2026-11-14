@@ -114,3 +114,12 @@ What happens: *Send now* is a separate click after approval. It re-runs the vali
 check, stops at the daily cap, sends once (a double click cannot send twice), BCCs BWE's `+log` address so BWE's email
 log keeps its record, and schedules a 7-day follow-up reminder. A reply stops that reminder; a bounce marks the address
 do-not-contact.
+
+## 8. Phase 4: End-of-Day Review
+
+1. **Database.** Render and run `supabase/migrations/20261117120000_gie_end_of_day.sql` on staging after the Phase 3
+   migrations. It adds three tables and hold/priority columns on opportunities.
+2. **Deploy staging.** No new keys. The existing cron builds each business day's review at the evening time (Settings shows
+   it); as owner you can press *Build today's review now* on the End-of-Day Review page.
+3. **Try it:** correct a status, choose a decision for each unfinished item, press *Finalize*. The note on the day appears
+   within about 15 minutes (it needs `ANTHROPIC_API_KEY`; without it the review still works and says the note is not written).

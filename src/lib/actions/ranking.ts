@@ -28,6 +28,10 @@ export type OpportunityCandidate = {
   doNotContact: boolean;
   /** Times this opportunity was in an earlier package and left unfinished. */
   timesCarried: number;
+  /** Held by the end-of-day review until this date (YYYY-MM-DD). */
+  holdUntil?: string | null;
+  /** 1 normally; lowered by an end-of-day "lower priority" decision. */
+  priorityMultiplier?: number;
 };
 
 export type RankedItem = {
@@ -73,8 +77,9 @@ export function rankCandidates(
   for (const o of opportunities) {
     if (o.alreadyInTodaysPackage || o.doNotContact) continue;
     if (o.timesCarried >= STALE_AFTER_CARRIES) continue;
+    if (o.holdUntil && o.holdUntil > today) continue;
     const effort: Effort = o.hasEmail ? "low" : "medium";
-    const base = (o.score * URGENCY[o.urgency]) / EFFORT_DIVISOR[effort];
+    const base = ((o.score * URGENCY[o.urgency]) / EFFORT_DIVISOR[effort]) * (o.priorityMultiplier ?? 1);
     const rankScore = Math.round((base + (o.status === "pursuing" ? 8 : 0)) * 1000) / 1000;
     items.push({
       kind: "opportunity",
