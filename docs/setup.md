@@ -74,3 +74,16 @@ Do these in order. Each step can be checked before the next.
 
 The classification model is the `GIE_CLASSIFY_MODEL` variable in `wrangler.jsonc` (`claude-opus-5-5` now; the
 Haiku 5.5 comparison is a later step on real pages).
+
+## 6. Phase 3: Daily Action Center (first slice)
+
+1. **Database.** Render and run the Phase 3 migration on staging after the Phase 2 one:
+   `npm run migrate:render -- supabase/migrations/20261115120000_gie_daily_actions.sql --split`, paste the
+   **staging** file into the SQL editor. No new keys or Worker settings are needed.
+2. **Deploy staging**, then open the Daily Action Center. The morning package is built by the existing cron once the
+   local time passes the morning window, or as owner press *Build today's actions now*.
+3. **Check the unsubscribe lists.** Approval reads BWE's `lead_email_unsubscribes` and `email_suppressions` tables
+   by an `email` column. If those names differ on staging, approval is refused (it fails closed); tell me what the
+   tables look like and I will fix the query.
+4. **Not in this slice:** nothing is sent, and replies are not detected. Approval only records that a person approved
+   the exact text. Sending (through BWE's existing lead-email sender) and reply detection come next.

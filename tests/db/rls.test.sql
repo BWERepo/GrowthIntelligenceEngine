@@ -369,4 +369,193 @@ EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - a page is queued once pe
 END $$;
 RESET ROLE;
 
+
+-- ================================================================ Phase 3: Daily Action Center
+-- Fixture: a prospect, a draft, a follow-up and a package with one item for each tenant.
+INSERT INTO gie_staging.gie_prospects (tenant_id, opportunity_id, business_name, contact_email, contact_channel)
+  SELECT o.tenant_id, o.id, o.business_name, 'hello@' || t.slug || '-biz.com', 'email'
+  FROM gie_staging.gie_opportunities o JOIN gie_staging.gie_tenants t ON t.id = o.tenant_id;
+INSERT INTO gie_staging.gie_outreach_drafts (tenant_id, prospect_id, channel, subject, body, validation)
+  SELECT tenant_id, id, 'email', 'Hello', repeat('x', 100), '{"ok":true,"errors":[],"warnings":[]}' FROM gie_staging.gie_prospects;
+INSERT INTO gie_staging.gie_follow_up_tasks (tenant_id, prospect_id, due_date)
+  SELECT tenant_id, id, '2026-11-16' FROM gie_staging.gie_prospects;
+INSERT INTO gie_staging.gie_daily_action_packages (tenant_id, local_date, ranking_version)
+  SELECT id, '2026-11-16', 'ranking-v1' FROM gie_staging.gie_tenants;
+INSERT INTO gie_staging.gie_daily_action_items (tenant_id, package_id, rank, kind, opportunity_id, prospect_id, recommended_action, effort, importance, rank_score)
+  SELECT p.tenant_id, p.id, 1, 'opportunity', o.id, pr.id, 'Review', 'low', 6, 61
+  FROM gie_staging.gie_daily_action_packages p
+  JOIN gie_staging.gie_opportunities o ON o.tenant_id = p.tenant_id
+  JOIN gie_staging.gie_prospects pr ON pr.tenant_id = p.tenant_id;
+INSERT INTO gie_staging.gie_daily_action_events (tenant_id, item_id, event_type, to_status)
+  SELECT tenant_id, id, 'created', 'not_started' FROM gie_staging.gie_daily_action_items;
+SELECT FROM (SELECT set_config('test.bwe_item', i.id::text, false) FROM gie_staging.gie_daily_action_items i
+  JOIN gie_staging.gie_tenants t ON t.id = i.tenant_id WHERE t.slug = 'bwe') x;
+SELECT FROM (SELECT set_config('test.bwe_draft', d.id::text, false) FROM gie_staging.gie_outreach_drafts d
+  JOIN gie_staging.gie_tenants t ON t.id = d.tenant_id WHERE t.slug = 'bwe') x;
+SELECT FROM (SELECT set_config('test.bwe_prospect', p.id::text, false) FROM gie_staging.gie_prospects p
+  JOIN gie_staging.gie_tenants t ON t.id = p.tenant_id WHERE t.slug = 'bwe') x;
+
+SET ROLE authenticated;
+
+-- 18. Tenant B's owner sees only tenant B's actions, drafts and follow-ups, and cannot touch tenant A's.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_prospects) AND (SELECT count(*) = 1 FROM gie_staging.gie_outreach_drafts)
+  AND (SELECT count(*) = 1 FROM gie_staging.gie_follow_up_tasks) AND (SELECT count(*) = 1 FROM gie_staging.gie_daily_action_items)
+  AND (SELECT count(*) = 1 FROM gie_staging.gie_daily_action_packages) AND (SELECT count(*) = 1 FROM gie_staging.gie_daily_action_events),
+  'tenant B owner sees only tenant B prospects, drafts, follow-ups, packages, items and events');
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_daily_action_items SET status = 'completed' WHERE id = current_setting('test.bwe_item')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: tenant B owner changed tenant A action'; END IF;
+  RAISE NOTICE 'ok - tenant B owner cannot change tenant A actions';
+END $$;
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_outreach_drafts SET body = repeat('hacked ', 20) WHERE id = current_setting('test.bwe_draft')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: tenant B owner edited tenant A draft'; END IF;
+  RAISE NOTICE 'ok - tenant B owner cannot edit tenant A drafts';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_follow_up_tasks (tenant_id, prospect_id, due_date)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_prospect')::uuid, '2026-11-20');
+  RAISE EXCEPTION 'FAILED: tenant B owner created a follow-up in tenant A';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - tenant B owner cannot create follow-ups in tenant A';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_action_events (tenant_id, item_id, event_type)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_item')::uuid, 'note');
+  RAISE EXCEPTION 'FAILED: tenant B owner wrote a tenant A event';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - tenant B owner cannot write tenant A events';
+END $$;
+
+-- 19. BWE viewer: reads the package, but no drafts or queue, and changes nothing.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_daily_action_items) AND (SELECT count(*) = 1 FROM gie_staging.gie_follow_up_tasks), 'viewer reads the package and follow-ups');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_outreach_drafts), 'viewer cannot read outreach drafts (operators and up)');
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_daily_action_items SET status = 'completed';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: viewer changed an action'; END IF;
+  RAISE NOTICE 'ok - viewer cannot change actions';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_action_events (tenant_id, item_id, event_type)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_item')::uuid, 'note');
+  RAISE EXCEPTION 'FAILED: viewer wrote an event';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - viewer cannot write events';
+END $$;
+
+-- 20. BWE owner: may reword a draft and change an action's status, but cannot approve, forge or rewrite history.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_outreach_drafts SET body = repeat('edited ', 20), edited_by_person = true WHERE id = current_setting('test.bwe_draft')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAILED: owner could not edit own draft'; END IF;
+  RAISE NOTICE 'ok - owner can reword a draft';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_drafts SET status = 'approved', approved_by = auth.uid(), approved_at = now() WHERE id = current_setting('test.bwe_draft')::uuid;
+  RAISE EXCEPTION 'FAILED: owner approved a draft directly';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - approval is a server act: owners cannot set it directly';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_drafts SET validation = '{"ok":true,"errors":[],"warnings":[]}' WHERE id = current_setting('test.bwe_draft')::uuid;
+  RAISE EXCEPTION 'FAILED: owner rewrote validation';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - owners cannot rewrite validator results';
+END $$;
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_daily_action_items SET status = 'in_progress' WHERE id = current_setting('test.bwe_item')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAILED: owner could not change status'; END IF;
+  RAISE NOTICE 'ok - owner can change an action''s status';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_daily_action_items SET rank = 2 WHERE id = current_setting('test.bwe_item')::uuid;
+  RAISE EXCEPTION 'FAILED: owner changed an action rank';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - owners cannot re-rank or rewrite actions';
+END $$;
+INSERT INTO gie_staging.gie_daily_action_events (tenant_id, item_id, actor_user_id, event_type, from_status, to_status)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_item')::uuid, auth.uid(), 'status_changed', 'not_started', 'in_progress');
+DO $$ BEGIN
+  UPDATE gie_staging.gie_daily_action_events SET to_status = 'completed';
+  RAISE EXCEPTION 'FAILED: event rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - action events cannot be rewritten';
+END $$;
+DO $$ BEGIN
+  DELETE FROM gie_staging.gie_daily_action_events;
+  RAISE EXCEPTION 'FAILED: events deleted';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - action events cannot be deleted';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_action_packages (tenant_id, local_date, ranking_version)
+  VALUES (current_setting('test.bwe_id')::uuid, '2026-11-17', 'x');
+  RAISE EXCEPTION 'FAILED: owner created a package';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - packages are built by the server only';
+END $$;
+-- Follow-ups: operators may schedule and complete them.
+INSERT INTO gie_staging.gie_follow_up_tasks (tenant_id, prospect_id, due_date)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_prospect')::uuid, '2026-11-23');
+SELECT pg_temp.expect((SELECT count(*) = 2 FROM gie_staging.gie_follow_up_tasks), 'owner can schedule a follow-up');
+
+-- 21. Customers and other sites' users see nothing.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_daily_action_items) AND (SELECT count(*) = 0 FROM gie_staging.gie_prospects) AND (SELECT count(*) = 0 FROM gie_staging.gie_outreach_drafts), 'BWE customer sees no actions, prospects or drafts');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000d1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_daily_action_packages) AND (SELECT count(*) = 0 FROM gie_staging.gie_follow_up_tasks), 'other site''s user sees no packages or follow-ups');
+RESET ROLE;
+
+-- 22. Server role: one package per local date, at most five ranked items, approval needs a person,
+--     and nobody marked do-not-contact can have an approved email.
+SET ROLE service_role;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_action_packages (tenant_id, local_date, ranking_version)
+  VALUES (current_setting('test.bwe_id')::uuid, '2026-11-16', 'again');
+  RAISE EXCEPTION 'FAILED: second package for one date';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one package per workspace per local date';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_action_items (tenant_id, package_id, rank, kind, follow_up_id, recommended_action, effort, importance, rank_score)
+  SELECT p.tenant_id, p.id, 6, 'follow_up', f.id, 'x', 'low', 5, 1
+  FROM gie_staging.gie_daily_action_packages p JOIN gie_staging.gie_follow_up_tasks f ON f.tenant_id = p.tenant_id
+  WHERE p.tenant_id = current_setting('test.bwe_id')::uuid LIMIT 1;
+  RAISE EXCEPTION 'FAILED: a sixth action accepted';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - an action package holds at most five items';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_action_items (tenant_id, package_id, rank, kind, opportunity_id, recommended_action, effort, importance, rank_score)
+  SELECT tenant_id, package_id, 2, kind, opportunity_id, 'again', 'low', 5, 1 FROM gie_staging.gie_daily_action_items WHERE id = current_setting('test.bwe_item')::uuid;
+  RAISE EXCEPTION 'FAILED: same opportunity twice in a package';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - an opportunity appears once per package';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_drafts SET status = 'approved' WHERE id = current_setting('test.bwe_draft')::uuid;
+  RAISE EXCEPTION 'FAILED: approved without a person';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - approval needs who and when';
+END $$;
+UPDATE gie_staging.gie_prospects SET do_not_contact = true, do_not_contact_reason = 'asked to stop' WHERE id = current_setting('test.bwe_prospect')::uuid;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_drafts SET status = 'approved', approved_by = '00000000-0000-0000-0000-0000000000a1', approved_at = now()
+  WHERE id = current_setting('test.bwe_draft')::uuid;
+  RAISE EXCEPTION 'FAILED: approved outreach to a do-not-contact prospect';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - no approval for a do-not-contact prospect';
+END $$;
+UPDATE gie_staging.gie_prospects SET do_not_contact = false WHERE id = current_setting('test.bwe_prospect')::uuid;
+UPDATE gie_staging.gie_outreach_drafts SET status = 'approved', approved_by = '00000000-0000-0000-0000-0000000000a1', approved_at = now()
+  WHERE id = current_setting('test.bwe_draft')::uuid;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_outreach_drafts (tenant_id, prospect_id, channel, subject, body, validation)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_prospect')::uuid, 'email', 'Second', repeat('y', 100), '{}');
+  RAISE EXCEPTION 'FAILED: two live drafts for one prospect';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one live draft per prospect';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_daily_action_items (tenant_id, package_id, rank, kind, opportunity_id, recommended_action, effort, importance, rank_score)
+  SELECT current_setting('test.b_id')::uuid, p.id, 3, 'opportunity', o.id, 'cross', 'low', 5, 1
+  FROM gie_staging.gie_daily_action_packages p, gie_staging.gie_opportunities o
+  WHERE p.tenant_id = current_setting('test.b_id')::uuid AND o.tenant_id = current_setting('test.bwe_id')::uuid;
+  RAISE EXCEPTION 'FAILED: tenant B action pointed at tenant A opportunity';
+EXCEPTION WHEN foreign_key_violation THEN RAISE NOTICE 'ok - an action cannot point at another tenant''s opportunity';
+END $$;
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;
