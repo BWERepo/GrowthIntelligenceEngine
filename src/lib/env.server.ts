@@ -16,6 +16,18 @@ const EnvSchema = z
     ANTHROPIC_API_KEY: z.string().min(20).optional(),
     BRAVE_SEARCH_API_KEY: z.string().min(10).optional(),
     PAGESPEED_API_KEY: z.string().min(10).optional(),
+    // Phase 3 mail. Same names and values as BWE's lead mailbox; without them nothing is sent
+    // and replies are not read, and the screens say which setting is missing.
+    LEAD_EMAIL_SMTP_HOST: z.string().optional(),
+    LEAD_EMAIL_SMTP_PORT: z.string().optional(),
+    LEAD_EMAIL_SMTP_USER: z.string().email().optional(),
+    LEAD_EMAIL_SMTP_PASSWORD: z.string().min(8).optional(),
+    LEAD_EMAIL_IMAP_HOST: z.string().optional(),
+    EMAIL_LOG_IMAP_USER: z.string().email().optional(),
+    EMAIL_LOG_IMAP_PASSWORD: z.string().min(8).optional(),
+    UNSUBSCRIBE_SECRET: z.string().min(16).optional(),
+    UNSUBSCRIBE_BASE_URL: z.string().url().default("https://businesswebexpress.com"),
+    GIE_DAILY_SEND_CAP: z.coerce.number().int().min(1).max(200).default(20),
     GIE_CLASSIFY_MODEL: z.enum(["claude-opus-5-5", "claude-haiku-5-5"]).default("claude-opus-5-5"),
   })
   .refine((e) => (e.GIE_DB_SCHEMA === "gie_prod") === (e.BWE_DB_SCHEMA === "public"), {

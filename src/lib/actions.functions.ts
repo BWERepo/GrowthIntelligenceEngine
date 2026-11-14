@@ -14,6 +14,7 @@ import { MAILING_ADDRESS_MARKER, UNSUBSCRIBE_MARKER } from "./providers/ai/anthr
 import { hostOf } from "./discovery/url";
 import { checkSuppression } from "./actions/suppression.server";
 import { runMorningPackage } from "./pipeline/package.server";
+import { sendApprovedDraft } from "./pipeline/send.server";
 
 const STATUSES = ["not_started", "in_progress", "completed", "deferred", "blocked", "awaiting_response", "cancelled"] as const;
 
@@ -28,7 +29,7 @@ export type ActionItem = {
   opportunity: { id: string; businessName: string; websiteUrl: string | null; sourceUrl: string; score: number | null; band: string | null; signalType: string } | null;
   followUp: { id: string; dueDate: string; note: string | null } | null;
   prospect: { id: string; businessName: string; contactEmail: string | null; doNotContact: boolean } | null;
-  draft: { id: string; subject: string; body: string; followUpBody: string | null; status: string; validation: DraftValidation; editedByPerson: boolean } | null;
+  draft: { id: string; subject: string; body: string; followUpBody: string | null; status: string; validation: DraftValidation; editedByPerson: boolean; sentAt: string | null; sendError: string | null } | null;
 };
 
 export type DailyPackageView = {
@@ -64,7 +65,7 @@ export const getDailyPackage = createServerFn({ method: "GET" })
     for (const r of [opps, fus, prospects, scores]) if (r.error) throw new Error(r.error.message);
     // Drafts are visible to operators and up (RLS); viewers get none.
     const drafts = canAct && ids("prospect_id").length
-      ? await db.from("gie_outreach_drafts").select("id, prospect_id, subject, body, follow_up_body, status, validation, edited_by_person").eq("tenant_id", tenant.tenantId).in("prospect_id", ids("prospect_id")).in("status", ["draft", "approved"])
+      ? await db.from("gie_outreach_drafts").select("id, prospect_id, subject, body, follow_up_body, status, validation, edited_by_person, sent_at, send_error").eq("tenant_id", tenant.tenantId).in("prospect_id", ids("prospect_id")).in("status", ["draft", "approved", "sent"]).order("created_at", { ascending: false })
       : { data: [], error: null };
     if (drafts.error) throw new Error(drafts.error.message);
 
@@ -72,7 +73,8 @@ export const getDailyPackage = createServerFn({ method: "GET" })
     const oppBy = by(opps.data as any[]);
     const fuBy = by(fus.data as any[]);
     const pBy = by(prospects.data as any[]);
-    const draftBy = new Map(((drafts.data ?? []) as any[]).map((d) => [d.prospect_id, d]));
+    const draftBy = new Map<string, any>();
+    for (const d of (drafts.data ?? []) as any[]) if (!draftBy.has(d.prospect_id)) draftBy.set(d.prospect_id, d);
 
     return {
       localDate,
@@ -95,7 +97,7 @@ export const getDailyPackage = createServerFn({ method: "GET" })
           opportunity: o ? { id: o.id, businessName: o.business_name, websiteUrl: o.website_url, sourceUrl: o.source_url, score: o.latest_score, band: o.latest_band, signalType: o.signal_type } : null,
           followUp: f ? { id: f.id, dueDate: f.due_date, note: f.note } : null,
           prospect: p ? { id: p.id, businessName: p.business_name, contactEmail: p.contact_email, doNotContact: p.do_not_contact } : null,
-          draft: d ? { id: d.id, subject: d.subject, body: d.body, followUpBody: d.follow_up_body, status: d.status, validation: d.validation, editedByPerson: d.edited_by_person } : null,
+          draft: d ? { id: d.id, subject: d.subject, body: d.body, followUpBody: d.follow_up_body, status: d.status, validation: d.validation, editedByPerson: d.edited_by_person, sentAt: d.sent_at, sendError: d.send_error } : null,
         };
       }),
     };
@@ -259,4 +261,37 @@ export const getFollowUps = createServerFn({ method: "GET" })
       canAct: hasRole(tenant.role, "operator"),
       items: ((rows.data ?? []) as any[]).map((r) => ({ id: r.id, dueDate: r.due_date, note: r.note, businessName: r.prospect.business_name, overdue: r.due_date < today })),
     };
+  });
+
+/** Sends an approved draft. A separate, deliberate click from approving: it re-checks everything first. */
+export const sendDraft = createServerFn({ method: "POST" })
+  .middleware([requireUser])
+  .validator((d: unknown) => z.object({ slug: SlugInput, draftId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const tenant = await requireTenantRole(context.supabase, context.userId, data.slug, "operator");
+    const svc = serviceClient(context.env, context.env.GIE_DB_SCHEMA);
+    return sendApprovedDraft(context.env, svc, { id: tenant.tenantId, slug: tenant.slug }, data.draftId, context.userId);
+  });
+
+export type ReplyView = { id: string; prospectId: string; businessName: string; fromEmail: string; subject: string | null; snippet: string | null; kind: "reply" | "auto_reply" | "bounce"; receivedAt: string };
+
+export const getReplies = createServerFn({ method: "GET" })
+  .middleware([requireUser])
+  .validator((d: unknown) => z.object({ slug: SlugInput }).parse(d))
+  .handler(async ({ data, context }): Promise<ReplyView[]> => {
+    const tenant = await requireTenantRole(context.supabase, context.userId, data.slug, "operator");
+    const r = await context.supabase.from("gie_outreach_replies").select("id, prospect_id, from_email, subject, snippet, kind, received_at, prospect:gie_prospects(business_name)").eq("tenant_id", tenant.tenantId).eq("status", "new").order("received_at", { ascending: false }).limit(20);
+    if (r.error) throw new Error(r.error.message);
+    return ((r.data ?? []) as any[]).map((x) => ({ id: x.id, prospectId: x.prospect_id, businessName: x.prospect?.business_name ?? "Unknown", fromEmail: x.from_email, subject: x.subject, snippet: x.snippet, kind: x.kind, receivedAt: x.received_at }));
+  });
+
+export const markReplyHandled = createServerFn({ method: "POST" })
+  .middleware([requireUser])
+  .validator((d: unknown) => z.object({ slug: SlugInput, replyId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const tenant = await requireTenantRole(context.supabase, context.userId, data.slug, "operator");
+    const upd = await context.supabase.from("gie_outreach_replies").update({ status: "handled" }).eq("tenant_id", tenant.tenantId).eq("id", data.replyId).select("id");
+    if (upd.error) throw new Error(upd.error.message);
+    if (!upd.data?.length) throw new Error("Not found: that reply does not exist in this workspace.");
+    return { ok: true };
   });

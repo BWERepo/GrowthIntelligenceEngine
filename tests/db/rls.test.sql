@@ -558,4 +558,68 @@ EXCEPTION WHEN foreign_key_violation THEN RAISE NOTICE 'ok - an action cannot po
 END $$;
 RESET ROLE;
 
+
+-- ================================================================ Phase 3 slice 2: sending and replies
+INSERT INTO gie_staging.gie_outreach_replies (tenant_id, prospect_id, message_id, from_email, subject, snippet, kind, received_at)
+  SELECT tenant_id, id, '<reply-' || tenant_id || '@x.test>', contact_email, 'Re: Hello', 'Sounds good', 'reply', now() FROM gie_staging.gie_prospects;
+SELECT FROM (SELECT set_config('test.bwe_reply', r.id::text, false) FROM gie_staging.gie_outreach_replies r
+  JOIN gie_staging.gie_tenants t ON t.id = r.tenant_id WHERE t.slug = 'bwe') x;
+
+SET ROLE authenticated;
+-- 23. Replies are private to operators of their own workspace.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_outreach_replies), 'tenant B owner sees only tenant B replies');
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_outreach_replies SET status = 'handled' WHERE id = current_setting('test.bwe_reply')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: tenant B owner handled tenant A reply'; END IF;
+  RAISE NOTICE 'ok - tenant B owner cannot touch tenant A replies';
+END $$;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_outreach_replies), 'viewer cannot read replies');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_outreach_replies), 'BWE customer sees no replies');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_outreach_replies), 'BWE owner reads own replies');
+UPDATE gie_staging.gie_outreach_replies SET status = 'handled' WHERE id = current_setting('test.bwe_reply')::uuid;
+SELECT pg_temp.expect((SELECT status = 'handled' FROM gie_staging.gie_outreach_replies), 'owner can mark a reply handled');
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_replies SET snippet = 'rewritten';
+  RAISE EXCEPTION 'FAILED: owner rewrote a reply';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - owners cannot rewrite what a prospect wrote';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_outreach_replies (tenant_id, prospect_id, message_id, from_email, kind, received_at)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_prospect')::uuid, '<forged@x>', 'a@b.co', 'reply', now());
+  RAISE EXCEPTION 'FAILED: owner forged a reply';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - replies are written only by the mailbox sync';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_drafts SET status = 'sent', sent_at = now(), sent_message_id = '<x@y>';
+  RAISE EXCEPTION 'FAILED: owner marked a draft sent';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - sending is a server act: owners cannot mark a draft sent';
+END $$;
+RESET ROLE;
+
+SET ROLE service_role;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_outreach_replies (tenant_id, prospect_id, message_id, from_email, kind, received_at)
+  SELECT tenant_id, prospect_id, message_id, from_email, kind, received_at FROM gie_staging.gie_outreach_replies LIMIT 1;
+  RAISE EXCEPTION 'FAILED: same message recorded twice';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - a reply is recorded once';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_outreach_drafts SET status = 'sent' WHERE id = current_setting('test.bwe_draft')::uuid;
+  RAISE EXCEPTION 'FAILED: sent without a time and message id';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a sent draft records when and which message';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_outreach_replies (tenant_id, prospect_id, message_id, from_email, kind, received_at)
+  VALUES (current_setting('test.b_id')::uuid, current_setting('test.bwe_prospect')::uuid, '<cross@x>', 'a@b.co', 'reply', now());
+  RAISE EXCEPTION 'FAILED: tenant B reply pointed at tenant A prospect';
+EXCEPTION WHEN foreign_key_violation THEN RAISE NOTICE 'ok - a reply cannot point at another tenant''s prospect';
+END $$;
+UPDATE gie_staging.gie_outreach_drafts SET status = 'sent', sent_at = now(), sent_message_id = '<ok@y>' WHERE id = current_setting('test.bwe_draft')::uuid;
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;
