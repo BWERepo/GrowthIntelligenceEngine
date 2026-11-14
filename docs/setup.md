@@ -132,3 +132,13 @@ do-not-contact.
 2. **Check.** The Daily Action Center's small *Daily Effectiveness* panel shows today's provisional score or why it is
    unavailable. Finalize an end-of-day review; within about 15 minutes that day's final score is stored and appears on the
    End-of-Day Review page. Rules and scoring: `docs/growth-intelligence/effectiveness-score.md`.
+
+## 10. Phase 6: 30-Day Growth Performance
+
+1. **Database.** Render and run `supabase/migrations/20261119120000_gie_growth.sql` on staging after the Phase 5 one. It adds
+   the outcome tables (funnel events, revenue events) and the frozen daily report table. No new keys.
+2. **Check.** Within about an hour of the next cron tick the Worker records outcomes. The Daily Action Center's top panel and
+   the Growth Performance page then show the last 30 days against the 30 before. In the BWE workspace the panel reads BWE's
+   leads, meetings, proposals, agreements, payments and site visits (read only); other workspaces show their own outreach
+   only and say the rest is not connected. After 06:00 local time one report per day is frozen. Details:
+   `docs/growth-intelligence/growth-performance.md`.
