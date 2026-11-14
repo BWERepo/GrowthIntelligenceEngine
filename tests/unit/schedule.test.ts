@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dayStatus, dueDailyJobs, localMoment, type WorkSchedule } from "@/lib/schedule";
+import { dayStatus, dueDailyJobs, inDiscoveryWindow, localMoment, startOfLocalDayUtc, startOfLocalMonthUtc, type WorkSchedule } from "@/lib/schedule";
 
 const bwe: WorkSchedule = {
   timezone: "America/New_York",
@@ -58,5 +58,24 @@ describe("dueDailyJobs", () => {
     const chicago = { ...bwe, timezone: "America/Chicago", closedDates: [] };
     expect(dueDailyJobs(new Date("2026-11-16T13:30:00Z"), chicago, [])).toEqual([]); // 07:30 in Chicago
     expect(dueDailyJobs(new Date("2026-11-16T14:00:00Z"), chicago, [])).toHaveLength(1);
+  });
+});
+
+
+describe("tenant-local day and month boundaries", () => {
+  it("finds local midnight across DST", () => {
+    expect(startOfLocalDayUtc("2026-11-01", "America/New_York").toISOString()).toBe("2026-11-01T04:00:00.000Z"); // still EDT at midnight
+    expect(startOfLocalDayUtc("2026-11-02", "America/New_York").toISOString()).toBe("2026-11-02T05:00:00.000Z"); // EST
+    expect(startOfLocalDayUtc("2026-03-08", "America/Chicago").toISOString()).toBe("2026-03-08T06:00:00.000Z");
+  });
+  it("starts the month at local midnight on the 1st", () => {
+    expect(startOfLocalMonthUtc(new Date("2026-11-20T15:00:00Z"), "America/New_York").toISOString()).toBe("2026-11-01T04:00:00.000Z");
+    // 03:00 UTC on Dec 1 is still Nov 30 in New York
+    expect(startOfLocalMonthUtc(new Date("2026-12-01T03:00:00Z"), "America/New_York").toISOString()).toBe("2026-11-01T04:00:00.000Z");
+  });
+  it("opens the overnight discovery window from 02:00 to 06:00 local", () => {
+    expect(inDiscoveryWindow(new Date("2026-11-16T07:00:00Z"), "America/New_York")).toBe(true); // 02:00 EST
+    expect(inDiscoveryWindow(new Date("2026-11-16T06:59:00Z"), "America/New_York")).toBe(false);
+    expect(inDiscoveryWindow(new Date("2026-11-16T11:00:00Z"), "America/New_York")).toBe(false); // 06:00
   });
 });

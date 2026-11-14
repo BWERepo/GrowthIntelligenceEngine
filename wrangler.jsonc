@@ -1,25 +1,32 @@
 {
   // Production Worker. Staging is the "staging" environment below.
-  // Secrets (never in this file): SUPABASE_SERVICE_ROLE_KEY.
+  // Secrets (never in this file): SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY,
+  // BRAVE_SEARCH_API_KEY, PAGESPEED_API_KEY.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "growth-intelligence",
-  "main": "@tanstack/react-start/server-entry",
+  "main": "src/server.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // One cron for the dispatcher (src/tasks/dispatch.ts). Needs Workers Paid:
+  // the account's free plan is at its 5-trigger limit.
+  "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
     // GIE's own tables, and the BWE schema it reads (read-only) in the same environment.
     "GIE_DB_SCHEMA": "gie_prod",
     "BWE_DB_SCHEMA": "public",
-    "BWE_TENANT_SLUG": "bwe"
+    "BWE_TENANT_SLUG": "bwe",
+    "GIE_CLASSIFY_MODEL": "claude-opus-5-5"
   },
   "env": {
     "staging": {
       "name": "growth-intelligence-staging",
+      "triggers": { "crons": ["*/15 * * * *"] },
       "vars": {
         "GIE_DB_SCHEMA": "gie_staging",
         "BWE_DB_SCHEMA": "bwe_staging",
-        "BWE_TENANT_SLUG": "bwe"
+        "BWE_TENANT_SLUG": "bwe",
+        "GIE_CLASSIFY_MODEL": "claude-opus-5-5"
       }
     }
   }

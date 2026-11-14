@@ -40,4 +40,37 @@ npx wrangler secret put SUPABASE_PUBLISHABLE_KEY --env staging
 3. Sign in with your BWE staging admin account (and authenticator code). You should land on the Daily Action Center
    with empty panels, and Settings should show the schedule, the $50 cap, you as owner, and the count of BWE staging leads.
 
-No scheduled jobs exist yet, so the free Workers plan is enough for Phase 1.
+Phase 1 alone has no scheduled jobs. Phase 2 adds one (section 5).
+
+## 5. Phase 2: discovery and scoring
+
+Do these in order. Each step can be checked before the next.
+
+1. **Workers Paid.** Cloudflare → Workers & Pages → Plans → upgrade to Workers Paid ($5/month). Phase 2 adds a
+   15-minute cron trigger to this Worker, and the free plan is already at its 5-trigger limit, so the deploy fails
+   without the upgrade.
+2. **Database.** Render and run the Phase 2 migration on staging, exactly like step 1:
+   `npm run migrate:render -- supabase/migrations/20261114120000_gie_discovery.sql --split`, then paste the
+   **staging** file into the SQL editor. Check: `select name, status from gie_staging.gie_campaigns;` returns one
+   row, *East Tennessee small businesses*, status `draft`.
+3. **Keys** (Worker secrets; the values never go in the repository):
+
+   ```
+   npx wrangler secret put ANTHROPIC_API_KEY --env staging      # Claude API key (classification)
+   npx wrangler secret put BRAVE_SEARCH_API_KEY --env staging   # Brave Search API, "Search" plan
+   npx wrangler secret put PAGESPEED_API_KEY --env staging      # Google PageSpeed Insights (free; optional)
+   ```
+
+   Brave: sign up at brave.com/search/api, choose the **Search** plan and
+   create a key. PageSpeed: Google Cloud console → enable *PageSpeed Insights API* →
+   Credentials → API key (restrict it to that API). Without a key, that step is skipped and Campaigns says which
+   key is missing.
+4. **Deploy staging** (Actions → Deploy staging).
+5. **Turn it on.** Campaigns → review the starter campaign's industries, places and searches → set it to *Active* →
+   Save. As owner, *Run today's search now* searches immediately (no AI cost); the cron then classifies about 3
+   pages every 15 minutes (roughly 12 an hour) until the queue is empty or the cap is reached.
+6. **Check.** Campaigns shows the queue counts and the month's spending; Opportunities lists what was found, each
+   with its source page, the exact quotes, and the score breakdown.
+
+The classification model is the `GIE_CLASSIFY_MODEL` variable in `wrangler.jsonc` (`claude-opus-5-5` now; the
+Haiku 5.5 comparison is a later step on real pages).

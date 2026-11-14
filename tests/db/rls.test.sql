@@ -187,4 +187,186 @@ DO $$ BEGIN
 EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - invalid working days rejected';
 END $$;
 
+
+-- ================================================================ Phase 2: discovery and scoring
+-- 12. Seed: BWE gets one draft campaign; nothing searches until someone activates it.
+SELECT pg_temp.expect((SELECT count(*) = 1 AND bool_and(c.status = 'draft') FROM gie_staging.gie_campaigns c
+  JOIN gie_staging.gie_tenants t ON t.id = c.tenant_id WHERE t.slug = 'bwe'), 'seed adds one draft campaign for BWE');
+
+-- Fixture: one campaign, page, queued candidate, opportunity, classification and score per tenant.
+INSERT INTO gie_staging.gie_campaigns (tenant_id, name, status)
+  SELECT id, 'Client B campaign', 'active' FROM gie_staging.gie_tenants WHERE slug = 'client-b';
+INSERT INTO gie_staging.gie_sources (tenant_id, source_type, normalized_url, host, robots_allowed, content_text)
+  SELECT t.id, 'web_page', 'https://' || t.slug || '-biz.com', t.slug || '-biz.com', true, 'page text' FROM gie_staging.gie_tenants t;
+INSERT INTO gie_staging.gie_discovery_candidates (tenant_id, campaign_id, signal_type, query, provider, url, normalized_url, local_date)
+  SELECT c.tenant_id, c.id, 'prospecting', 'q', 'brave', 'https://' || t.slug || '-biz.com', 'https://' || t.slug || '-biz.com', '2026-11-16'
+  FROM gie_staging.gie_campaigns c JOIN gie_staging.gie_tenants t ON t.id = c.tenant_id;
+INSERT INTO gie_staging.gie_opportunities (tenant_id, campaign_id, source_id, signal_type, business_name, source_url, dedupe_key, latest_score, latest_band)
+  SELECT c.tenant_id, c.id, s.id, 'prospecting', t.name || ' prospect', s.normalized_url, 'site:' || s.host, 61, 'review'
+  FROM gie_staging.gie_campaigns c JOIN gie_staging.gie_tenants t ON t.id = c.tenant_id
+  JOIN gie_staging.gie_sources s ON s.tenant_id = c.tenant_id;
+INSERT INTO gie_staging.gie_opportunity_classifications (tenant_id, candidate_id, source_id, schema_version, prompt_version, model, outcome, output)
+  SELECT d.tenant_id, d.id, s.id, 'opportunity-v1', 'classify-v1', 'claude-opus-5-5', 'accepted', '{"summary":"x"}'
+  FROM gie_staging.gie_discovery_candidates d JOIN gie_staging.gie_sources s ON s.tenant_id = d.tenant_id;
+INSERT INTO gie_staging.gie_opportunity_scores (tenant_id, opportunity_id, classification_id, rule_version, score, band, inputs)
+  SELECT o.tenant_id, o.id, k.id, 'opportunity-score-v1', 61, 'review', '{}'
+  FROM gie_staging.gie_opportunities o JOIN gie_staging.gie_opportunity_classifications k ON k.tenant_id = o.tenant_id;
+INSERT INTO gie_staging.gie_opportunity_score_components (tenant_id, score_id, component, weight, value, points, explanation)
+  SELECT tenant_id, id, 'fit', 30, 0.9, 27, 'test' FROM gie_staging.gie_opportunity_scores;
+SELECT FROM (SELECT set_config('test.bwe_opp', o.id::text, false) FROM gie_staging.gie_opportunities o
+  JOIN gie_staging.gie_tenants t ON t.id = o.tenant_id WHERE t.slug = 'bwe') x;
+SELECT FROM (SELECT set_config('test.bwe_campaign', c.id::text, false) FROM gie_staging.gie_campaigns c
+  JOIN gie_staging.gie_tenants t ON t.id = c.tenant_id WHERE t.slug = 'bwe') x;
+
+SET ROLE authenticated;
+
+-- 13. Client B's owner sees only Client B's discovery data, and cannot touch BWE's.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_campaigns), 'tenant B owner sees only tenant B campaigns');
+SELECT pg_temp.expect((SELECT array_agg(business_name) = '{"Client B prospect"}' FROM gie_staging.gie_opportunities), 'tenant B owner sees only tenant B opportunities');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_sources), 'tenant B owner sees only tenant B sources');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_discovery_candidates), 'tenant B owner sees only tenant B queue');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_opportunity_classifications), 'tenant B owner sees only tenant B classifications');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_opportunity_scores), 'tenant B owner sees only tenant B scores');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_opportunity_score_components), 'tenant B owner sees only tenant B score components');
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_campaigns (tenant_id, name) VALUES (current_setting('test.bwe_id')::uuid, 'Planted');
+  RAISE EXCEPTION 'FAILED: tenant B owner created a campaign in tenant A';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - tenant B owner cannot create a campaign in tenant A';
+END $$;
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_opportunities SET status = 'archived' WHERE id = current_setting('test.bwe_opp')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: tenant B owner changed tenant A opportunity'; END IF;
+  RAISE NOTICE 'ok - tenant B owner cannot change tenant A opportunities';
+END $$;
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_campaigns SET status = 'active' WHERE id = current_setting('test.bwe_campaign')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: tenant B owner activated tenant A campaign'; END IF;
+  RAISE NOTICE 'ok - tenant B owner cannot change tenant A campaigns';
+END $$;
+
+-- 14. BWE viewer: reads opportunities and scores, cannot change anything, cannot see the queue.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_opportunities), 'viewer reads own tenant opportunities');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_opportunity_score_components), 'viewer reads score breakdown');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_discovery_candidates), 'viewer cannot read the discovery queue (operators and up)');
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_opportunities SET status = 'saved';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAILED: viewer changed an opportunity status'; END IF;
+  RAISE NOTICE 'ok - viewer cannot change opportunity status';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_campaigns (tenant_id, name) VALUES (current_setting('test.bwe_id')::uuid, 'Viewer campaign');
+  RAISE EXCEPTION 'FAILED: viewer created a campaign';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - viewer cannot create campaigns';
+END $$;
+
+-- 15. BWE owner: may change status (and only status), never the AI or score records.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_opportunities SET status = 'dismissed', dismiss_reason = 'not a fit' WHERE id = current_setting('test.bwe_opp')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAILED: owner could not dismiss'; END IF;
+  RAISE NOTICE 'ok - owner can change opportunity status';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_opportunities SET latest_score = 100 WHERE id = current_setting('test.bwe_opp')::uuid;
+  RAISE EXCEPTION 'FAILED: owner rewrote a score';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - owner cannot edit an opportunity''s score';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_opportunities SET status = 'dismissed', dismiss_reason = NULL WHERE id = current_setting('test.bwe_opp')::uuid;
+  RAISE EXCEPTION 'FAILED: dismissed without a reason';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - dismissing needs a reason';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_opportunity_scores (tenant_id, opportunity_id, classification_id, rule_version, score, band, inputs)
+  SELECT tenant_id, opportunity_id, id, 'forged', 100, 'very_high', '{}' FROM gie_staging.gie_opportunity_classifications LIMIT 1;
+  RAISE EXCEPTION 'FAILED: owner wrote a score';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - owner cannot write scores';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_opportunities (tenant_id, campaign_id, source_id, signal_type, business_name, source_url, dedupe_key)
+  SELECT tenant_id, campaign_id, source_id, signal_type, 'Forged', source_url, 'forged' FROM gie_staging.gie_opportunities LIMIT 1;
+  RAISE EXCEPTION 'FAILED: owner created an opportunity by hand';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - opportunities are created by discovery only';
+END $$;
+DO $$ BEGIN
+  PERFORM gie_staging.claim_discovery_candidates(current_setting('test.bwe_id')::uuid, 5);
+  RAISE EXCEPTION 'FAILED: signed-in user claimed queue items';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - only the server can claim queue items';
+END $$;
+
+-- 16. A BWE customer and another site's user see no discovery data.
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_opportunities) AND (SELECT count(*) = 0 FROM gie_staging.gie_campaigns), 'BWE customer sees no campaigns or opportunities');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000d1');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_sources) AND (SELECT count(*) = 0 FROM gie_staging.gie_opportunity_scores), 'other site''s user sees no sources or scores');
+RESET ROLE;
+
+-- 17. Server role: tenant-safe references, permanent records, and a race-free queue.
+SET ROLE service_role;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_opportunities (tenant_id, campaign_id, source_id, signal_type, business_name, source_url, dedupe_key)
+  SELECT current_setting('test.b_id')::uuid, current_setting('test.bwe_campaign')::uuid, s.id, 'prospecting', 'Cross', 'https://x.com', 'cross'
+  FROM gie_staging.gie_sources s WHERE s.tenant_id = current_setting('test.b_id')::uuid;
+  RAISE EXCEPTION 'FAILED: tenant B row pointed at tenant A campaign';
+EXCEPTION WHEN foreign_key_violation THEN RAISE NOTICE 'ok - a row cannot point at another tenant''s campaign';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_opportunities (tenant_id, campaign_id, source_id, signal_type, business_name, source_url, dedupe_key)
+  SELECT tenant_id, campaign_id, source_id, signal_type, 'Again', source_url, dedupe_key FROM gie_staging.gie_opportunities
+  WHERE id = current_setting('test.bwe_opp')::uuid;
+  RAISE EXCEPTION 'FAILED: duplicate business accepted';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - one opportunity per business per tenant';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_opportunity_scores SET score = 100;
+  RAISE EXCEPTION 'FAILED: score rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - scores cannot be rewritten, even by the server';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_opportunity_classifications SET output = '{"summary":"changed"}';
+  RAISE EXCEPTION 'FAILED: classification rewritten';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - classifications cannot be rewritten';
+END $$;
+DO $$ DECLARE n int; BEGIN
+  UPDATE gie_staging.gie_opportunity_classifications k SET opportunity_id = o.id
+  FROM gie_staging.gie_opportunities o WHERE o.tenant_id = k.tenant_id AND k.opportunity_id IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 2 THEN RAISE EXCEPTION 'FAILED: could not link classifications'; END IF;
+  RAISE NOTICE 'ok - a classification can be linked to its opportunity once';
+END $$;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_opportunity_classifications SET opportunity_id = NULL;
+  RAISE EXCEPTION 'FAILED: classification unlinked';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - the link cannot be changed afterwards';
+END $$;
+DO $$ BEGIN
+  DELETE FROM gie_staging.gie_opportunity_classifications;
+  RAISE EXCEPTION 'FAILED: classifications deleted';
+EXCEPTION WHEN insufficient_privilege THEN RAISE NOTICE 'ok - classifications cannot be deleted';
+END $$;
+INSERT INTO gie_staging.gie_discovery_candidates (tenant_id, campaign_id, signal_type, query, provider, url, normalized_url, local_date)
+  SELECT current_setting('test.bwe_id')::uuid, current_setting('test.bwe_campaign')::uuid, 'buying_intent', 'q', 'brave',
+         'https://p' || g || '.com', 'https://p' || g || '.com', '2026-11-16'
+  FROM generate_series(1, 4) g;
+DO $$ DECLARE a int; b int; c int; BEGIN
+  SELECT count(*) INTO a FROM gie_staging.claim_discovery_candidates(current_setting('test.bwe_id')::uuid, 3);
+  SELECT count(*) INTO b FROM gie_staging.claim_discovery_candidates(current_setting('test.bwe_id')::uuid, 3);
+  SELECT count(*) INTO c FROM gie_staging.claim_discovery_candidates(current_setting('test.bwe_id')::uuid, 3);
+  IF a <> 3 OR b <> 2 OR c <> 0 THEN RAISE EXCEPTION 'FAILED: queue claims % / % / %', a, b, c; END IF;
+  RAISE NOTICE 'ok - queue items are handed out once, in limited slices';
+END $$;
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_discovery_candidates (tenant_id, campaign_id, signal_type, query, provider, url, normalized_url, local_date)
+  VALUES (current_setting('test.bwe_id')::uuid, current_setting('test.bwe_campaign')::uuid, 'buying_intent', 'other query', 'brave', 'https://p1.com/', 'https://p1.com', '2026-11-17');
+  RAISE EXCEPTION 'FAILED: same page queued twice';
+EXCEPTION WHEN unique_violation THEN RAISE NOTICE 'ok - a page is queued once per tenant';
+END $$;
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;
