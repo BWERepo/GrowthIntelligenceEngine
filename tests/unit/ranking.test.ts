@@ -46,3 +46,22 @@ describe("morning ranking", () => {
     expect(r[0]!.recommendedAction).not.toMatch(/asked/);
   });
 });
+
+describe("daily focus", () => {
+  const mix = [opp("asked", 60, { signalType: "buying_intent", hasEmail: false }), opp("easy", 60, { signalType: "prospecting", hasEmail: true })];
+  it("balanced is the original order", () => {
+    expect(rankCandidates(TODAY, [], mix).map((r) => r.businessName)).toEqual(rankCandidates(TODAY, [], mix, "balanced").map((r) => r.businessName));
+  });
+  it("new_business puts businesses that asked for help first", () => {
+    expect(rankCandidates(TODAY, [], mix, "new_business")[0]!.opportunityId).toBe("asked");
+  });
+  it("quick_wins puts the low-effort item first", () => {
+    expect(rankCandidates(TODAY, [], mix, "quick_wins")[0]!.opportunityId).toBe("easy");
+  });
+  it("short_day plans three items and still lists due follow-ups first", () => {
+    const many = Array.from({ length: 8 }, (_, i) => opp(`o${i}`, 90 - i));
+    const r = rankCandidates(TODAY, [fu("1", "2026-11-10")], many, "short_day");
+    expect(r).toHaveLength(3);
+    expect(r[0]!.kind).toBe("follow_up");
+  });
+});

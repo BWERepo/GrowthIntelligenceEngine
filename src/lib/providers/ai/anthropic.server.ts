@@ -98,6 +98,8 @@ export type DraftEvidence = {
   summary: string | null;
   quotes: string[];
   pagespeed: { performance: number | null; seo: number | null } | null;
+  /** One checked sentence about broken links, or null. Only this text may be used for the claim. */
+  brokenLinks?: string | null;
 };
 
 export function buildDraftPrompt(e: DraftEvidence): string {
@@ -107,6 +109,7 @@ export function buildDraftPrompt(e: DraftEvidence): string {
     `Business: ${e.businessName}`,
     `Website: ${e.websiteUrl ?? "(not verified)"}`,
     e.pagespeed ? `PageSpeed (mobile, measured): performance ${e.pagespeed.performance ?? "n/a"}/100, SEO ${e.pagespeed.seo ?? "n/a"}/100` : "PageSpeed: not measured",
+    e.brokenLinks ? `Broken links (checked by us, 404/410 only): ${safe(e.brokenLinks)}` : "Broken links: none found or not checked (do not mention broken links)",
     "<evidence>",
     safe(e.summary ?? ""),
     ...e.quotes.map((q) => `Quote from their page: "${safe(q)}"`),

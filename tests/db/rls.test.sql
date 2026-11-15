@@ -1142,4 +1142,29 @@ SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
 SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_tenant_quotas WHERE tenant_id = current_setting('test.bwe_id')::uuid) AND (SELECT count(*) = 0 FROM gie_staging.gie_tenant_quotas WHERE tenant_id = current_setting('test.b_id2')::uuid), 'limits are visible only to their own workspace');
 RESET ROLE;
 
+-- Broken-link check results are stored as a source row.
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_sources (tenant_id, source_type, normalized_url, host, robots_allowed, metrics)
+    SELECT id, 'link_check', 'https://linkcheck-biz.com', 'linkcheck-biz.com', true, '{"checked":4,"broken":[]}'::jsonb FROM gie_staging.gie_tenants WHERE slug = 'client-b';
+  RAISE NOTICE 'ok - a link_check source can be stored';
+  BEGIN
+    INSERT INTO gie_staging.gie_sources (tenant_id, source_type, normalized_url, host, robots_allowed)
+      SELECT id, 'other_kind', 'https://x-biz.com', 'x-biz.com', true FROM gie_staging.gie_tenants WHERE slug = 'client-b';
+    RAISE EXCEPTION 'FAILED: unknown source type accepted';
+  EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - an unknown source type is still rejected';
+  END;
+END $$;
+
+-- Daily focus preference.
+INSERT INTO gie_staging.gie_tenant_work_schedules (tenant_id) SELECT id FROM gie_staging.gie_tenants WHERE slug = 'client-b' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  UPDATE gie_staging.gie_tenant_work_schedules SET daily_focus = 'quick_wins' WHERE tenant_id = (SELECT id FROM gie_staging.gie_tenants WHERE slug = 'client-b');
+  RAISE NOTICE 'ok - a valid daily focus can be saved';
+  BEGIN
+    UPDATE gie_staging.gie_tenant_work_schedules SET daily_focus = 'anything' WHERE tenant_id = (SELECT id FROM gie_staging.gie_tenants WHERE slug = 'client-b');
+    RAISE EXCEPTION 'FAILED: unknown focus accepted';
+  EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - an unknown daily focus is rejected';
+  END;
+END $$;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;

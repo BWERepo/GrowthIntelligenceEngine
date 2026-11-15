@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { getCampaignsPage, runSearchNow, saveCampaign, type Campaign, type CampaignFields } from "@/lib/discovery.functions";
+import { addQueries, competitorQueries, SWITCHING_QUERY_TEMPLATES } from "@/lib/discovery/queries";
 import { useWorkspace } from "@/lib/use-workspace";
 import { EmptyState, Notice, PageHeader, Panel } from "@/components/ui";
 
@@ -129,6 +130,7 @@ function CampaignEditor({ campaign, canEdit, onDone }: { campaign: Campaign | nu
   const qc = useQueryClient();
   const save = useServerFn(saveCampaign);
   const initial = campaign ?? { ...EMPTY, id: "", updatedAt: "" };
+  const [competitor, setCompetitor] = useState("");
   const [f, setF] = useState({
     ...initial,
     industriesText: initial.industries.join("\n"),
@@ -195,6 +197,15 @@ function CampaignEditor({ campaign, canEdit, onDone }: { campaign: Campaign | nu
           <span className="text-sm text-espresso-soft">Buying-intent searches (one per line; {"{location}"} is replaced by each location)</span>
           <textarea className={`${input} font-mono text-sm`} rows={5} value={f.intentText} disabled={disabled} onChange={(e) => setF({ ...f, intentText: e.target.value })} />
         </label>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <button type="button" disabled={disabled} className="rounded border border-espresso/30 px-2 py-1" onClick={() => setF({ ...f, intentText: addQueries(lines(f.intentText), SWITCHING_QUERY_TEMPLATES).join("\n") })}>
+            Add searches for unhappy or switching customers
+          </button>
+          <input className={`${input} max-w-xs`} placeholder="Competitor name, e.g. Wix" value={competitor} disabled={disabled} onChange={(e) => setCompetitor(e.target.value)} />
+          <button type="button" disabled={disabled || !competitor.trim()} className="rounded border border-espresso/30 px-2 py-1" onClick={() => { setF({ ...f, intentText: addQueries(lines(f.intentText), competitorQueries([competitor])).join("\n") }); setCompetitor(""); }}>
+            Add competitor searches
+          </button>
+        </div>
         <label className="block">
           <span className="text-sm text-espresso-soft">Prospecting searches (businesses that may need a better site)</span>
           <textarea className={`${input} font-mono text-sm`} rows={5} value={f.prospectText} disabled={disabled} onChange={(e) => setF({ ...f, prospectText: e.target.value })} />

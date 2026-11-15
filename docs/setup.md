@@ -161,3 +161,13 @@ do-not-contact.
    suspension work in the database, and adds per-workspace limits. No new keys.
 2. **Before any real client:** split staging into its own Supabase project and settle the questions in
    `docs/growth-intelligence/agency-readiness.md`. Then create the first client workspace on the Workspaces page.
+
+## 13. Switching searches, broken-link check and daily focus (2026.11.22.01)
+
+Run these two files in the staging SQL editor, in order (they are also appended to `ALL-staging-in-order.sql`):
+1. `20261122120000_gie_linkcheck.staging.sql`
+2. `20261122130000_gie_daily_focus.staging.sql`
+
+- **Campaigns:** under the buying-intent box, "Add searches for unhappy or switching customers" adds five ready-made lines, and you can add searches for a competitor by name. Edit or delete any line, then Save.
+- **Broken links:** for prospecting businesses, the engine checks up to 10 pages linked from their homepage. Only "page not found" (404/410) counts. It shows on the opportunity and is offered to the email draft as a fact; nothing is mentioned when none is found.
+- **Daily focus:** Settings, Work schedule, "Daily focus" (owner only): Balanced, Quick wins, New business, or Short day. It applies from the next morning package.

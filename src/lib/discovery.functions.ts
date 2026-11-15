@@ -2,6 +2,7 @@
 // the caller's own token (RLS). The service role is used only after the
 // caller's tenant role has been checked: for audit rows, provider status and
 // the owner's "search now".
+import { brokenLinkSentence } from "@/lib/discovery/linkcheck";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireUser } from "./auth-middleware";
@@ -188,6 +189,7 @@ export type OpportunityCard = {
   quotes: Array<{ field: string; quote: string }>;
   model: string | null;
   pagespeed: { performance: number | null; seo: number | null; accessibility: number | null } | null;
+  brokenLinks: string | null;
 };
 
 export const getOpportunities = createServerFn({ method: "GET" })
@@ -216,12 +218,13 @@ export const getOpportunities = createServerFn({ method: "GET" })
     const ids = rows.map((r) => r.id);
     if (!ids.length) return { items: [], canAct: hasRole(tenant.role, "operator") };
 
-    const [scores, classes, speeds] = await Promise.all([
+    const [scores, classes, speeds, linkRows] = await Promise.all([
       db.from("gie_opportunity_scores").select("id, opportunity_id, rule_version, created_at, gie_opportunity_score_components(component, weight, value, points, explanation)").eq("tenant_id", tenant.tenantId).in("opportunity_id", ids).order("created_at", { ascending: false }),
       db.from("gie_opportunity_classifications").select("opportunity_id, model, output, evidence_checked, created_at").eq("tenant_id", tenant.tenantId).eq("outcome", "accepted").in("opportunity_id", ids).order("created_at", { ascending: false }),
       db.from("gie_sources").select("normalized_url, metrics, fetched_at").eq("tenant_id", tenant.tenantId).eq("source_type", "pagespeed").in("normalized_url", rows.map((r) => r.website_url).filter(Boolean)).order("fetched_at", { ascending: false }),
+      db.from("gie_sources").select("normalized_url, metrics, fetched_at").eq("tenant_id", tenant.tenantId).eq("source_type", "link_check").in("normalized_url", rows.map((r) => r.website_url).filter(Boolean)).order("fetched_at", { ascending: false }),
     ]);
-    for (const r of [scores, classes, speeds]) if (r.error) throw new Error(r.error.message);
+    for (const r of [scores, classes, speeds, linkRows]) if (r.error) throw new Error(r.error.message);
     const latest = <T extends Record<string, any>>(list: T[], key: string) => {
       const m = new Map<string, T>();
       for (const item of list) if (!m.has(item[key])) m.set(item[key], item);
@@ -230,6 +233,7 @@ export const getOpportunities = createServerFn({ method: "GET" })
     const scoreBy = latest((scores.data ?? []) as any[], "opportunity_id");
     const classBy = latest((classes.data ?? []) as any[], "opportunity_id");
     const speedBy = latest((speeds.data ?? []) as any[], "normalized_url");
+    const linkBy = latest((linkRows.data ?? []) as any[], "normalized_url");
     const order = ["intent", "fit", "freshness", "reachability", "evidence"];
 
     return {
@@ -261,6 +265,7 @@ export const getOpportunities = createServerFn({ method: "GET" })
           quotes,
           model: c?.model ?? null,
           pagespeed: p?.metrics ? { performance: p.metrics.performance ?? null, seo: p.metrics.seo ?? null, accessibility: p.metrics.accessibility ?? null } : null,
+          brokenLinks: brokenLinkSentence((r.website_url ? linkBy.get(r.website_url)?.metrics : null) ?? null),
         };
       }),
     };

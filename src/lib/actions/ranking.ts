@@ -6,6 +6,21 @@ export const MAX_ITEMS = 5;
 
 export type Effort = "low" | "medium" | "high";
 
+/**
+ * What the day should lean towards. "balanced" is the original ranking, unchanged.
+ * quick_wins favors low-effort items; new_business favors businesses that asked for help;
+ * short_day keeps the same order but plans only three items.
+ */
+export const FOCUSES = ["balanced", "quick_wins", "new_business", "short_day"] as const;
+export type Focus = (typeof FOCUSES)[number];
+export const FOCUS_LABELS: Record<Focus, string> = {
+  balanced: "Balanced (default)",
+  quick_wins: "Quick wins: easiest items first",
+  new_business: "New business: businesses that asked for help first",
+  short_day: "Short day: only the top 3 items",
+};
+export const SHORT_DAY_ITEMS = 3;
+
 export type FollowUpCandidate = {
   kind: "follow_up";
   followUpId: string;
@@ -55,6 +70,7 @@ export function rankCandidates(
   today: string,
   followUps: FollowUpCandidate[],
   opportunities: OpportunityCandidate[],
+  focus: Focus = "balanced",
 ): RankedItem[] {
   const items: RankedItem[] = [];
 
@@ -79,7 +95,8 @@ export function rankCandidates(
     if (o.timesCarried >= STALE_AFTER_CARRIES) continue;
     if (o.holdUntil && o.holdUntil > today) continue;
     const effort: Effort = o.hasEmail ? "low" : "medium";
-    const base = ((o.score * URGENCY[o.urgency]) / EFFORT_DIVISOR[effort]) * (o.priorityMultiplier ?? 1);
+    const lean = focus === "quick_wins" ? (effort === "low" ? 1.4 : 1) : focus === "new_business" ? (o.signalType === "buying_intent" ? 1.5 : 1) : 1;
+    const base = ((o.score * URGENCY[o.urgency]) / EFFORT_DIVISOR[effort]) * (o.priorityMultiplier ?? 1) * lean;
     const rankScore = Math.round((base + (o.status === "pursuing" ? 8 : 0)) * 1000) / 1000;
     items.push({
       kind: "opportunity",
@@ -97,5 +114,5 @@ export function rankCandidates(
 
   return items
     .sort((a, b) => b.rankScore - a.rankScore || a.businessName.localeCompare(b.businessName))
-    .slice(0, MAX_ITEMS);
+    .slice(0, focus === "short_day" ? SHORT_DAY_ITEMS : MAX_ITEMS);
 }

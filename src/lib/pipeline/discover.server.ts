@@ -12,6 +12,7 @@ import { dayStatus, inDiscoveryWindow, localMoment, type WorkSchedule } from "@/
 import { maySpend, recordUsage } from "@/lib/spend.server";
 import { braveSearch } from "@/lib/providers/search/brave.server";
 import type { SearchProvider } from "@/lib/providers/search/types";
+import { pickLinksToCheck, summarizeLinks, type LinkResult } from "@/lib/discovery/linkcheck";
 import { runPageSpeed } from "@/lib/providers/pagespeed.server";
 import { classifyPage, estimateCostUsd, worstCaseCostUsd } from "@/lib/providers/ai/anthropic.server";
 import { createPoliteFetcher } from "@/lib/discovery/fetch.server";
@@ -464,6 +465,35 @@ export async function runClassifyStage(
         await recordUsage(db, { tenantId: tenant.id, category: "other", provider: "pagespeed", operation: "runPagespeed", costUsd: 0, isEstimate: false, idempotencyKey: `pagespeed:${opp.id}` });
       } catch (error) {
         console.warn("[discovery] pagespeed failed", error instanceof Error ? error.message : error);
+      }
+    }
+
+    // 8. Prospecting: check the pages linked from their own homepage; only 404/410 counts as broken. Failure is not fatal.
+    if (c.signal_type === "prospecting" && website) {
+      try {
+        const home = await fetcher.fetchPage(website);
+        if (home.ok) {
+          const results: LinkResult[] = [];
+          for (const link of pickLinksToCheck(home.links, home.finalUrl)) {
+            const r = await fetcher.fetchPage(link);
+            results.push({ url: link, status: r.ok ? r.status : r.status });
+          }
+          if (results.length) {
+            must(
+              await db.from("gie_sources").insert({
+                tenant_id: tenant.id,
+                source_type: "link_check",
+                normalized_url: website,
+                host: hostOf(website) ?? "unknown",
+                fetched_at: new Date().toISOString(),
+                robots_allowed: true,
+                metrics: summarizeLinks(results),
+              }),
+            );
+          }
+        }
+      } catch (error) {
+        console.warn("[discovery] link check failed", error instanceof Error ? error.message : error);
       }
     }
   }

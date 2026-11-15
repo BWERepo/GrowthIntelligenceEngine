@@ -129,6 +129,8 @@ function OpportunityItem({ o, canAct }: { o: OpportunityCard; canAct: boolean })
         </p>
       ) : null}
 
+      {o.brokenLinks ? <p className="mt-2 text-sm text-espresso-soft">Broken links: {o.brokenLinks}</p> : null}
+
       <button className="mt-3 text-sm underline" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         {open ? "Hide evidence and score" : "Show evidence and score"}
       </button>
