@@ -101,7 +101,8 @@ describe("every server function checks who is asking", () => {
   const files = readdirSync(dir).filter((f) => f.endsWith(".functions.ts"));
   // getWorkspace reads only the caller's own memberships through RLS; getTenantSettings resolves the caller's membership.
   const guards = ["requireTenantRole(", "requirePlatformAdmin(", "resolveTenant("];
-  const own = ["getWorkspace"];
+  // verifyPin checks the password session itself (requireSession) and then the PIN.
+  const own = ["getWorkspace", "verifyPin"];
   it("has files to check", () => expect(files.length).toBeGreaterThan(5));
   for (const f of files) {
     const src = readFileSync(`${dir}/${f}`, "utf8");

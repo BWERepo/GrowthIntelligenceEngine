@@ -28,3 +28,10 @@ export async function checkBweConnection(env: ServerEnv, now = new Date()): Prom
   }
   return { ok: true, schema: env.BWE_DB_SCHEMA, leadsTotal: all.count ?? 0, leadsLast30Days: recent.count ?? 0 };
 }
+
+/** The keyed hash of a person's BWE back-office PIN, or null when they have not set one. Read-only. */
+export async function readPinHash(env: ServerEnv, userId: string): Promise<string | null> {
+  const r = await bweReader(env).from("admin_quick_codes").select("code_hash").eq("user_id", userId).maybeSingle();
+  if (r.error) throw new Error("The PIN could not be checked right now. Please try again.");
+  return (r.data?.code_hash as string | undefined) ?? null;
+}

@@ -26,6 +26,8 @@ const EnvSchema = z
     EMAIL_LOG_IMAP_USER: z.string().email().optional(),
     EMAIL_LOG_IMAP_PASSWORD: z.string().min(8).optional(),
     UNSUBSCRIBE_SECRET: z.string().min(16).optional(),
+    // Same value as BWE's: lets sign-in check the BWE back-office PIN against BWE's keyed hash (read-only).
+    MESSAGE_ENCRYPTION_KEY: z.string().min(16).optional(),
     UNSUBSCRIBE_BASE_URL: z.string().url().default("https://businesswebexpress.com"),
     GIE_DAILY_SEND_CAP: z.coerce.number().int().min(1).max(200).default(20),
     GIE_CLASSIFY_MODEL: z.enum(["claude-opus-5-5", "claude-haiku-5-5"]).default("claude-opus-5-5"),
@@ -55,6 +57,7 @@ const MAIL_CHECKS: Record<string, { kind: "text" | "email"; ok: (v: string) => b
   EMAIL_LOG_IMAP_USER: { kind: "email", ok: (v) => z.string().email().safeParse(v).success },
   EMAIL_LOG_IMAP_PASSWORD: { kind: "text", ok: (v) => v.length >= 8 },
   UNSUBSCRIBE_SECRET: { kind: "text", ok: (v) => v.length >= 16 },
+  MESSAGE_ENCRYPTION_KEY: { kind: "text", ok: (v) => v.length >= 16 },
 };
 
 export function readServerEnv(source: Record<string, string | undefined> = process.env): ServerEnv {

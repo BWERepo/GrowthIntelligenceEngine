@@ -1,7 +1,8 @@
 import { createMiddleware } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { readServerEnv } from "./env.server";
-import { aalFromJwt, needsSecondFactor } from "./mfa";
+import { claimFromJwt } from "./pin";
+import { sessionHasPin } from "./pipeline/pin.server";
 import { serviceClient, userClient } from "./supabase.server";
 
 export class Unauthorized extends Error {
@@ -10,12 +11,7 @@ export class Unauthorized extends Error {
   }
 }
 
-/**
- * Requires a valid Supabase session. The token is verified by Supabase Auth
- * (getUser), not just decoded, and the assurance level is taken from the
- * verified token so 2FA-protected admin rights work the same as in BWE.
- */
-export const requireUser = createMiddleware({ type: "function" }).server(async ({ next }) => {
+async function verifiedSession() {
   const env = readServerEnv();
   const header = getRequest()?.headers.get("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
@@ -24,16 +20,23 @@ export const requireUser = createMiddleware({ type: "function" }).server(async (
   const supabase = userClient(env, token);
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data.user) throw new Unauthorized();
+  return { env, token, supabase, userId: data.user.id, email: data.user.email ?? null };
+}
 
-  // An account with an authenticator must have entered its code: a password-only session is refused.
-  if (aalFromJwt(token) !== "aal2") {
-    const admin = serviceClient(env, env.GIE_DB_SCHEMA);
-    const { data: full, error: lookupError } = await admin.auth.admin.getUserById(data.user.id);
-    if (lookupError) throw new Unauthorized("Could not check your sign-in. Please try again.");
-    if (needsSecondFactor(aalFromJwt(token), full.user?.factors as Array<{ factor_type?: string; status?: string }> | undefined)) {
-      throw new Unauthorized("Enter your authenticator code to finish signing in.");
-    }
-  }
+/** A valid password session only. Used by the PIN step itself, which is what finishes the sign-in. */
+export const requireSession = createMiddleware({ type: "function" }).server(async ({ next }) => {
+  const s = await verifiedSession();
+  return next({ context: { env: s.env, supabase: s.supabase, userId: s.userId, email: s.email, sessionId: claimFromJwt(s.token, "session_id") } });
+});
 
-  return next({ context: { env, supabase, userId: data.user.id, email: data.user.email ?? null } });
+/**
+ * Requires a valid Supabase session that has also passed the BWE PIN check. The token is verified by
+ * Supabase Auth (getUser), not just decoded. A password-only session is refused here, so the PIN step
+ * cannot be skipped by going straight to a page.
+ */
+export const requireUser = createMiddleware({ type: "function" }).server(async ({ next }) => {
+  const s = await verifiedSession();
+  const db = serviceClient(s.env, s.env.GIE_DB_SCHEMA);
+  if (!(await sessionHasPin(db, s.userId, claimFromJwt(s.token, "session_id")))) throw new Unauthorized("Enter your PIN to finish signing in.");
+  return next({ context: { env: s.env, supabase: s.supabase, userId: s.userId, email: s.email } });
 });

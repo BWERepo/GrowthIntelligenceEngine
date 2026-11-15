@@ -36,17 +36,8 @@ function AppLayout() {
 
   useEffect(() => {
     const sb = browserSupabase();
-    // A password-only session of an account that has an authenticator counts as signed out.
-    const check = async (hasSession: boolean) => {
-      if (!hasSession) return setSession("out");
-      const { data: aal } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
-      setSession(aal?.nextLevel === "aal2" && aal.currentLevel !== "aal2" ? "out" : "in");
-    };
-    sb.auth.getSession().then(({ data }) => void check(!!data.session));
-    const { data: sub } = sb.auth.onAuthStateChange((_event, s) => {
-      // Not awaited inside the callback: Supabase calls from here can deadlock.
-      setTimeout(() => void check(!!s), 0);
-    });
+    sb.auth.getSession().then(({ data }) => setSession(data.session ? "in" : "out"));
+    const { data: sub } = sb.auth.onAuthStateChange((_event, s) => setSession(s ? "in" : "out"));
     return () => sub.subscription.unsubscribe();
   }, []);
   useEffect(() => {
@@ -54,7 +45,14 @@ function AppLayout() {
   }, [session, navigate]);
 
   const fetchWorkspace = useServerFn(getWorkspace);
-  const workspace = useQuery({ queryKey: ["workspace"], queryFn: () => fetchWorkspace(), enabled: session === "in" });
+  const workspace = useQuery({ queryKey: ["workspace"], queryFn: () => fetchWorkspace(), enabled: session === "in", retry: false });
+  // A password-only session (no PIN yet) is refused by the server: go back to sign-in.
+  useEffect(() => {
+    if (workspace.error?.message?.includes("Enter your PIN")) {
+      void browserSupabase().auth.signOut();
+      setSession("out");
+    }
+  }, [workspace.error]);
 
   if (session !== "in" || workspace.isLoading) {
     return <p className="p-8 text-espresso-soft" role="status">Loading…</p>;

@@ -1070,7 +1070,8 @@ BEGIN
   FOR r IN SELECT c.oid, c.relname, c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
            WHERE n.nspname = 'gie_staging' AND c.relkind = 'r' LOOP
     IF NOT r.relrowsecurity THEN bad := bad || ' no-RLS:' || r.relname; END IF;
-    IF r.relname <> 'gie_tenants' AND NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = r.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped) THEN
+    -- The two PIN sign-in tables belong to a person, not a workspace: RLS on, no policy, server-only.
+    IF r.relname NOT IN ('gie_tenants', 'gie_pin_attempts', 'gie_pin_sessions') AND NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = r.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped) THEN
       bad := bad || ' no-tenant_id:' || r.relname;
     END IF;
   END LOOP;
@@ -1188,6 +1189,28 @@ SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
 SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_tenant_mail_settings), 'a member reads their own sender settings');
 SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
 SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_tenant_mail_settings), 'another workspace cannot read them');
+RESET ROLE;
+
+-- PIN sign-in tables: nobody but the server touches them.
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_pin_attempts (user_id) VALUES ('00000000-0000-0000-0000-0000000000b1');
+  INSERT INTO gie_staging.gie_pin_sessions (session_id, user_id) VALUES (gen_random_uuid(), '00000000-0000-0000-0000-0000000000b1');
+  RAISE NOTICE 'ok - the server can record PIN attempts and sessions';
+END $$;
+SET ROLE authenticated;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+DO $$ BEGIN
+  PERFORM count(*) FROM gie_staging.gie_pin_attempts;
+  RAISE EXCEPTION 'a signed-in user could read PIN attempts';
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'ok - a signed-in user cannot read PIN attempts';
+END $$;
+DO $$ BEGIN
+  PERFORM count(*) FROM gie_staging.gie_pin_sessions;
+  RAISE EXCEPTION 'a signed-in user could read PIN sessions';
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'ok - a signed-in user cannot read PIN sessions';
+END $$;
 RESET ROLE;
 
 SELECT 'ALL DATABASE TESTS PASSED' AS result;

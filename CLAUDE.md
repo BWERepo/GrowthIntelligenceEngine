@@ -6,7 +6,7 @@ measures 30-day growth. The plan, decisions and phase list are in `docs/growth-i
 ## Architecture in one paragraph
 TanStack Start on its own Cloudflare Worker (`growth-intelligence`, staging `growth-intelligence-staging`). Same Supabase
 project as BWE: GIE's tables live in `gie_staging` / `gie_prod`; BWE's schema of the same environment (`bwe_staging` /
-`public`) is **read-only** from here. Sign-in uses BWE back-office accounts (including their authenticator codes).
+`public`) is **read-only** from here. Sign-in uses BWE back-office accounts (email, password and their 6-digit back-office PIN).
 
 ## Rules
 1. **Tenant isolation is the first rule.** Every GIE table has `tenant_id`, RLS enabled, and policies through

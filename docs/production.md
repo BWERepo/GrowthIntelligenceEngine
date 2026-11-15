@@ -21,7 +21,7 @@ Address: **https://growthintelligence.businesswebexpress.com**. Nothing here is 
    Cloudflare account. If it is not, add a CNAME for `growthintelligence` to the Worker yourself.
 5. **Worker secrets (once, after the first deploy):** `npx wrangler secret put <NAME>` for each of
    `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `BRAVE_SEARCH_API_KEY`,
-   `PAGESPEED_API_KEY`, `LEAD_EMAIL_SMTP_USER`, `LEAD_EMAIL_SMTP_PASSWORD`, `UNSUBSCRIBE_SECRET` (same as BWE), and
+   `PAGESPEED_API_KEY`, `LEAD_EMAIL_SMTP_USER`, `LEAD_EMAIL_SMTP_PASSWORD`, `UNSUBSCRIBE_SECRET` (same as BWE), `MESSAGE_ENCRYPTION_KEY` (same value as BWE: sign-in checks the back-office PIN against BWE's keyed hash, read-only; never rotate it), and
    the IMAP settings if replies are to be read. Use BWE's production values, not staging's.
 6. **Protect the address.** Put `growthintelligence.businesswebexpress.com` behind Cloudflare Access with an email allow-list
    (like BWE's admin) before anyone signs in.
