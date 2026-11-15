@@ -37,3 +37,13 @@ Address: **https://growthintelligence.businesswebexpress.com**. Nothing here is 
 Staging is no longer needed once production is verified. To retire it: delete the `growth-intelligence-staging` Worker
 (this also frees its cron trigger), remove the `env.staging` block and `deploy-staging.yml`, and drop the `gie_staging` schema
 only after confirming nothing there is wanted.
+
+## Changing the mailbox password or login
+1. Make a new app password for the mailbox (Gmail: Google Account, Security, 2-Step Verification, App passwords) and copy the 16 characters, with no spaces or quotes.
+2. Cloudflare, Workers & Pages, `growth-intelligence`, Settings, Variables and Secrets: edit `LEAD_EMAIL_SMTP_PASSWORD`, save and deploy.
+   Or from a terminal: `npx wrangler secret put LEAD_EMAIL_SMTP_PASSWORD` (no `--env` for production).
+3. If replies are read with a separate login, also change `EMAIL_LOG_IMAP_PASSWORD`.
+4. A different mailbox: change `LEAD_EMAIL_SMTP_USER` (and `EMAIL_LOG_IMAP_USER` if set) the same way, then clear the send-as address in Settings unless it is an alias of the new mailbox.
+5. Check: Settings, Outreach email shows the login in use. Approve and send one email to your own address.
+6. BWE's own lead emails use the same mailbox, so change its password in BWE too, or BWE's sending stops.
+The password is only ever a Worker secret. It is never stored in the database or shown in the app.

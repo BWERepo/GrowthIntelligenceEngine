@@ -25,6 +25,9 @@ export function logBccAddress(user: string, gieSchema: string): string {
 
 export type OutgoingMail = {
   fromName: string;
+  /** Address shown in the From line; the SMTP login stays the envelope sender. Defaults to the login. */
+  fromEmail?: string;
+  replyTo?: string;
   to: string;
   bcc?: string;
   subject: string;
@@ -51,7 +54,8 @@ function encodeSubject(subject: string): string {
 export function buildMessage(mail: OutgoingMail, fromEmail: string, messageId: string): string {
   const domain = fromEmail.split("@")[1] || "localhost";
   const headers = [
-    `From: "${noBreaks(mail.fromName, "sender name").replace(/"/g, "'")}" <${noBreaks(fromEmail, "from")}>`,
+    `From: "${noBreaks(mail.fromName, "sender name").replace(/"/g, "'")}" <${noBreaks(mail.fromEmail ?? fromEmail, "from")}>`,
+    ...(mail.replyTo ? [`Reply-To: ${noBreaks(mail.replyTo, "reply-to")}`] : []),
     `To: ${noBreaks(mail.to, "recipient")}`,
     `Subject: ${encodeSubject(noBreaks(mail.subject, "subject"))}`,
     `Date: ${new Date().toUTCString()}`,

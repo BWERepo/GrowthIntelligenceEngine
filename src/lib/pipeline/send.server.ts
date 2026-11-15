@@ -10,6 +10,7 @@ import { validateDraft } from "@/lib/actions/draft-validator";
 import { composeOutreach, formatMailingAddress } from "@/lib/actions/outreach-message";
 import { unsubscribeUrl } from "@/lib/actions/unsubscribe-link.server";
 import { MAILING_ADDRESS_MARKER, UNSUBSCRIBE_MARKER } from "@/lib/providers/ai/anthropic.server";
+import { DEFAULT_MAIL_SETTINGS, effectiveFrom, type MailSettings } from "@/lib/mail/settings";
 import { hostOf } from "@/lib/discovery/url";
 import { logBccAddress, sendMail, type MailboxConfig } from "@/lib/providers/mail/smtp.server";
 
@@ -19,6 +20,13 @@ export type SendResult = { ok: true; messageId: string; to: string } | { ok: fal
 export function mailboxFrom(env: ServerEnv): MailboxConfig | null {
   if (!env.LEAD_EMAIL_SMTP_USER || !env.LEAD_EMAIL_SMTP_PASSWORD) return null;
   return { host: env.LEAD_EMAIL_SMTP_HOST || "smtp.gmail.com", port: Number(env.LEAD_EMAIL_SMTP_PORT) || 465, user: env.LEAD_EMAIL_SMTP_USER, pass: env.LEAD_EMAIL_SMTP_PASSWORD };
+}
+
+/** The visible sender chosen on the dashboard, or the defaults when nothing was saved. */
+export async function loadMailSettings(db: Db, tenantId: string): Promise<MailSettings> {
+  const r = await db.from("gie_tenant_mail_settings").select("from_name, from_email, reply_to_email").eq("tenant_id", tenantId).maybeSingle();
+  if (r.error) throw new Error(r.error.message);
+  return r.data ? { fromName: r.data.from_name, fromEmail: r.data.from_email, replyTo: r.data.reply_to_email } : DEFAULT_MAIL_SETTINGS;
 }
 
 export async function sendApprovedDraft(
@@ -88,14 +96,19 @@ export async function sendApprovedDraft(
     return { ok: false, reason: e instanceof Error ? e.message : "The message could not be put together." };
   }
 
+  const sender = await loadMailSettings(db, tenant.id);
+  const shownFrom = effectiveFrom(mailbox.user, sender) ?? mailbox.user;
+
   // Claim first: only one caller can move approved -> sent, so a double click or a retry never sends twice.
-  const claim = await db.from("gie_outreach_drafts").update({ status: "sent", sent_at: now.toISOString(), sent_message_id: "pending", sent_from: mailbox.user, send_error: null }).eq("tenant_id", tenant.id).eq("id", d.data.id).eq("status", "approved").select("id");
+  const claim = await db.from("gie_outreach_drafts").update({ status: "sent", sent_at: now.toISOString(), sent_message_id: "pending", sent_from: shownFrom, send_error: null }).eq("tenant_id", tenant.id).eq("id", d.data.id).eq("status", "approved").select("id");
   if (claim.error) throw new Error(claim.error.message);
   if (!claim.data?.length) return { ok: false, reason: "The draft changed while sending. Reload and check its status." };
 
   try {
     const { messageId } = await send(mailbox, {
-      fromName: "Business Web Express",
+      fromName: sender.fromName,
+      fromEmail: sender.fromEmail ?? undefined,
+      replyTo: sender.replyTo ?? undefined,
       to,
       bcc: logBccAddress(mailbox.user, env.GIE_DB_SCHEMA),
       subject: composed.subject,

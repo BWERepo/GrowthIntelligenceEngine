@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { FOCUSES, type Focus } from "./actions/ranking";
 import { requireTenantRole } from "./tenant-access.server";
+import { checkMailSettings, DEFAULT_MAIL_SETTINGS, effectiveFrom, type MailSettings } from "./mail/settings";
 import { requireUser } from "./auth-middleware";
 import { hasRole, resolveTenant, TENANT_ROLES, type Membership } from "./roles";
 import { serviceClient } from "./supabase.server";
@@ -40,7 +41,28 @@ export type TenantSettings = {
   budgets: Array<{ category: string; period: string; limitUsd: number; alertAt: number[] }>;
   members: Array<{ userId: string; email: string | null; role: string; isYou: boolean }>;
   bwe: BweConnection | null;
+  /** BWE workspace only: who outreach comes from, and what the Worker's mailbox secrets provide. */
+  mail: {
+    settings: MailSettings;
+    shownFrom: string | null;
+    loginUser: string | null;
+    passwordSet: boolean;
+    unsubscribeSecretSet: boolean;
+    repliesMailbox: string | null;
+  } | null;
 };
+
+function mailView(env: { LEAD_EMAIL_SMTP_USER?: string; LEAD_EMAIL_SMTP_PASSWORD?: string; UNSUBSCRIBE_SECRET?: string; EMAIL_LOG_IMAP_USER?: string }, row: { from_name: string; from_email: string | null; reply_to_email: string | null } | null): NonNullable<TenantSettings["mail"]> {
+  const settings: MailSettings = row ? { fromName: row.from_name, fromEmail: row.from_email, replyTo: row.reply_to_email } : DEFAULT_MAIL_SETTINGS;
+  return {
+    settings,
+    shownFrom: effectiveFrom(env.LEAD_EMAIL_SMTP_USER, settings),
+    loginUser: env.LEAD_EMAIL_SMTP_USER ?? null,
+    passwordSet: !!env.LEAD_EMAIL_SMTP_PASSWORD,
+    unsubscribeSecretSet: !!env.UNSUBSCRIBE_SECRET,
+    repliesMailbox: env.EMAIL_LOG_IMAP_USER || env.LEAD_EMAIL_SMTP_USER || null,
+  };
+}
 
 /** Settings page: everything is read as the user (RLS), except member emails and the BWE check. */
 export const getTenantSettings = createServerFn({ method: "GET" })
@@ -59,12 +81,14 @@ export const getTenantSettings = createServerFn({ method: "GET" })
     const tenant = resolveTenant(mine, data.slug);
     if (!tenant) throw new Error("Forbidden: you do not have access to this workspace.");
 
-    const [schedule, budgets, members] = await Promise.all([
+    const isBweTenant = tenant.slug === context.env.BWE_TENANT_SLUG;
+    const [schedule, budgets, members, mailRow] = await Promise.all([
       db.from("gie_tenant_work_schedules").select("working_days, morning_time, evening_time, daily_focus").eq("tenant_id", tenant.tenantId).maybeSingle(),
       db.from("gie_budgets").select("category, period, limit_usd, alert_at").eq("tenant_id", tenant.tenantId).order("category"),
       db.from("gie_tenant_memberships").select("user_id, role").eq("tenant_id", tenant.tenantId).order("role"),
+      isBweTenant ? db.from("gie_tenant_mail_settings").select("from_name, from_email, reply_to_email").eq("tenant_id", tenant.tenantId).maybeSingle() : Promise.resolve({ data: null, error: null }),
     ]);
-    for (const r of [schedule, budgets, members]) if (r.error) throw new Error(r.error.message);
+    for (const r of [schedule, budgets, members, mailRow]) if (r.error) throw new Error(r.error.message);
 
     // Member emails live in auth.users, which only the service role can read; owners only.
     const emails = new Map<string, string | null>();
@@ -94,6 +118,7 @@ export const getTenantSettings = createServerFn({ method: "GET" })
         isYou: m.user_id === context.userId,
       })),
       bwe: isBwe ? await checkBweConnection(context.env) : null,
+      mail: isBweTenant ? mailView(context.env, (mailRow.data as { from_name: string; from_email: string | null; reply_to_email: string | null } | null)) : null,
     };
   });
 
@@ -108,5 +133,21 @@ export const saveDailyFocus = createServerFn({ method: "POST" })
     if (upd.error) throw new Error(upd.error.message);
     if (!upd.data?.length) throw new Error("Not found: this workspace has no work schedule yet.");
     await db.from("gie_audit_events").insert({ tenant_id: tenant.tenantId, actor_user_id: context.userId, action: "schedule.focus", entity_type: "work_schedule", entity_id: tenant.tenantId, after: { focus: data.focus } });
+    return { ok: true };
+  });
+
+/** The owner chooses the visible sender. The mailbox login and password are Worker secrets and cannot be set here. */
+export const saveMailSettings = createServerFn({ method: "POST" })
+  .middleware([requireUser])
+  .validator((d: unknown) => z.object({ slug: z.string().regex(/^[a-z0-9][a-z0-9-]{1,39}$/), fromName: z.string().max(200), fromEmail: z.string().max(300), replyTo: z.string().max(300) }).parse(d))
+  .handler(async ({ data, context }): Promise<{ ok: true }> => {
+    const tenant = await requireTenantRole(context.supabase, context.userId, data.slug, "owner");
+    if (tenant.slug !== context.env.BWE_TENANT_SLUG) throw new Error("Forbidden: only the Business Web Express workspace sends email from this app.");
+    const checked = checkMailSettings({ fromName: data.fromName, fromEmail: data.fromEmail, replyTo: data.replyTo });
+    if (!checked.ok) throw new Error(`Invalid: ${checked.error}`);
+    const db = serviceClient(context.env, context.env.GIE_DB_SCHEMA);
+    const up = await db.from("gie_tenant_mail_settings").upsert({ tenant_id: tenant.tenantId, from_name: checked.value.fromName, from_email: checked.value.fromEmail, reply_to_email: checked.value.replyTo, updated_by: context.userId, updated_at: new Date().toISOString() }, { onConflict: "tenant_id" });
+    if (up.error) throw new Error(up.error.message);
+    await db.from("gie_audit_events").insert({ tenant_id: tenant.tenantId, actor_user_id: context.userId, action: "mail.settings", entity_type: "mail_settings", entity_id: tenant.tenantId, after: { from_email: checked.value.fromEmail, reply_to: checked.value.replyTo } });
     return { ok: true };
   });
