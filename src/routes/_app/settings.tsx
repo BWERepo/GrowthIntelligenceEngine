@@ -147,6 +147,17 @@ function MailPanel({ slug, mail, isOwner }: { slug: string; mail: MailView; isOw
           The send-as address must be the mailbox login itself or an alias that mailbox is allowed to send as (in Gmail: Settings, Accounts, "Send mail as"), or the provider may change it or reject the email.
           The mailbox login and password are Worker secrets and are not changed here.
         </p>
+        <details className="rounded-lg border border-line px-3 py-2 text-sm">
+          <summary className="cursor-pointer font-medium">How to change the mailbox password or login</summary>
+          <ol className="mt-2 list-decimal space-y-1 pl-5 text-espresso-soft">
+            <li>Create a new app password for the mailbox (Gmail: Google Account, Security, 2-Step Verification, App passwords). Copy the 16 characters.</li>
+            <li>In Cloudflare: Workers &amp; Pages, the <strong>growth-intelligence</strong> Worker, Settings, Variables and Secrets.</li>
+            <li>Edit <code className="font-mono text-xs">LEAD_EMAIL_SMTP_PASSWORD</code> and paste the new value. If replies are read with a separate login, also edit <code className="font-mono text-xs">EMAIL_LOG_IMAP_PASSWORD</code>. Save and deploy.</li>
+            <li>To use a different mailbox, change <code className="font-mono text-xs">LEAD_EMAIL_SMTP_USER</code> (and <code className="font-mono text-xs">EMAIL_LOG_IMAP_USER</code> if set) the same way, then clear the send-as address above unless it is an alias of the new mailbox.</li>
+            <li>This page shows the login in use once the change is live. Reload it, then approve and send one email to your own address to test.</li>
+          </ol>
+          <p className="mt-2 text-espresso-soft">BWE's own lead emails use the same mailbox. Change its password there too, or BWE's sending will stop.</p>
+        </details>
         {replyElsewhere ? <Notice>Replies to a different mailbox than "Replies read from" will not be detected by this app.</Notice> : null}
         {m.error ? <Notice tone="error">{m.error.message}</Notice> : null}
         {isOwner ? (
