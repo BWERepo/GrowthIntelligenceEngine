@@ -12,6 +12,9 @@
   // One cron for the dispatcher (src/tasks/dispatch.ts). Needs Workers Paid:
   // the account's free plan is at its 5-trigger limit.
   "triggers": { "crons": ["*/15 * * * *"] },
+  // Production address. Wrangler creates the DNS record when this Worker is deployed,
+  // as long as businesswebexpress.com is a zone in the same Cloudflare account.
+  "routes": [{ "pattern": "growthintelligence.businesswebexpress.com", "custom_domain": true }],
   "vars": {
     // GIE's own tables, and the BWE schema it reads (read-only) in the same environment.
     "GIE_DB_SCHEMA": "gie_prod",
