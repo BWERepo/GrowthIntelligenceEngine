@@ -106,9 +106,16 @@ It reuses BWE's unsubscribe page and lists, so there is no new sending service.
    `UNSUBSCRIBE_BASE_URL` (default https://businesswebexpress.com), `GIE_DAILY_SEND_CAP` (default 20 sent emails a day).
 3. **BWE's mailing address** is read from BWE's business settings (the mailing address, never the physical one). If it is
    empty, nothing is sent.
-4. **Check on staging with your own address first:** make a prospect whose email is yours, approve, press *Send now*,
-   click the unsubscribe link in the email (BWE's page should confirm), reply to it, and within 15 minutes the reply
-   appears under *Replies to your outreach*.
+4. **Check on staging with your own address first.** The app has no screen for adding a test prospect: prospects come from
+   opportunities that discovery finds. So: create and activate a campaign, press *Run search now* on the Campaigns page,
+   press *Build today's package* on the Daily Action Center, then (before approving) point that prospect at your own
+   address in the Supabase SQL editor:
+   `update gie_staging.gie_prospects set contact_email = 'you@example.com' where id = (select id from gie_staging.gie_prospects order by created_at desc limit 1);`
+   Then approve, press *Send now*, click the unsubscribe link in the email (BWE's page should confirm; this puts your address
+   on BWE's unsubscribe list, so delete that row from `lead_email_unsubscribes` in `bwe_staging` to test again), reply to
+   it, and within 15 minutes the reply appears under *Replies to your outreach*.
+   Mail secrets are cleaned (spaces, quotes and `Name <address>` wrappers are removed) and an unusable one is ignored and
+   logged by name, so sending is off rather than the whole app failing.
 
 What happens: *Send now* is a separate click after approval. It re-runs the validator and the unsubscribe and suppression
 check, stops at the daily cap, sends once (a double click cannot send twice), BCCs BWE's `+log` address so BWE's email

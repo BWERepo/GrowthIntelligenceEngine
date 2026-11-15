@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readServerEnv } from "@/lib/env.server";
 import { sanitizeServerError } from "@/lib/error-sanitize";
 // @ts-expect-error plain .mjs script without types
@@ -39,5 +39,25 @@ describe("error sanitizing", () => {
   });
   it("shows everything outside production", () => {
     expect(sanitizeServerError(new Error('relation "x"'), false).message).toBe('relation "x"');
+  });
+});
+
+describe("pasted mail settings", () => {
+  const ok = { SUPABASE_URL: "https://x.supabase.co", SUPABASE_PUBLISHABLE_KEY: "k".repeat(30), SUPABASE_SERVICE_ROLE_KEY: "s".repeat(30), GIE_DB_SCHEMA: "gie_staging", BWE_DB_SCHEMA: "bwe_staging" };
+  it("trims spaces, quotes and a display name around the mailbox address", () => {
+    expect(readServerEnv({ ...ok, LEAD_EMAIL_SMTP_USER: ' "Leads <leads@example.com>"\n' }).LEAD_EMAIL_SMTP_USER).toBe("leads@example.com");
+    expect(readServerEnv({ ...ok, LEAD_EMAIL_SMTP_USER: "  leads@example.com \n" }).LEAD_EMAIL_SMTP_USER).toBe("leads@example.com");
+  });
+  it("ignores an unusable mail value instead of taking the app down, without leaking it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const env = readServerEnv({ ...ok, LEAD_EMAIL_SMTP_USER: "not an address", UNSUBSCRIBE_SECRET: "short" });
+    expect(env.LEAD_EMAIL_SMTP_USER).toBeUndefined();
+    expect(env.UNSUBSCRIBE_SECRET).toBeUndefined();
+    expect(warn.mock.calls.flat().join(" ")).not.toMatch(/not an address|short/);
+    warn.mockRestore();
+  });
+  it("says whether a required setting is missing or invalid", () => {
+    expect(() => readServerEnv({ ...ok, SUPABASE_SERVICE_ROLE_KEY: undefined })).toThrow(/SUPABASE_SERVICE_ROLE_KEY \(missing\)/);
+    expect(() => readServerEnv({ ...ok, SUPABASE_SERVICE_ROLE_KEY: "short" })).toThrow(/SUPABASE_SERVICE_ROLE_KEY \(set but not valid\)/);
   });
 });
