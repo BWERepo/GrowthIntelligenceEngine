@@ -51,14 +51,14 @@ function SettingsPage() {
                 <dt className="text-espresso-soft">Daily focus</dt>
                 <dd>
                   {q.data.tenant.role === "owner" ? (
-                    <>
+                    <div className="flex flex-wrap items-center gap-2">
                       <select aria-label="Daily focus" className="rounded border border-espresso/30 bg-transparent px-2 py-1" value={pick ?? q.data.schedule.dailyFocus} disabled={focusM.isPending} onChange={(e) => { focusM.reset(); setPick(e.target.value as Focus); }}>
                         {FOCUSES.map((f) => <option key={f} value={f}>{FOCUS_LABELS[f]}</option>)}
                       </select>
-                      <button type="button" className="ml-2 rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50" disabled={focusM.isPending || pick === null || pick === q.data.schedule.dailyFocus} onClick={() => pick && focusM.mutate(pick)}>
+                      <button type="button" className="rounded-lg bg-terracotta px-4 py-1.5 text-white disabled:opacity-50" disabled={focusM.isPending || pick === null || pick === q.data.schedule.dailyFocus} onClick={() => pick && focusM.mutate(pick)}>
                         {focusM.isPending ? "Saving…" : "Save"}
                       </button>
-                    </>
+                    </div>
                   ) : FOCUS_LABELS[q.data.schedule.dailyFocus]}
                   {focusM.error ? <span role="alert" className="block text-sm text-red-700">{focusM.error.message}</span> : <span role="status" className="block text-sm text-espresso-soft">{focusM.isSuccess ? "Saved. " : ""}Applies from the next morning package.</span>}
                 </dd>
