@@ -112,3 +112,25 @@ describe("sending an approved draft", () => {
     expect(db.tables.gie_follow_up_tasks).toHaveLength(0);
   });
 });
+
+describe("the visible sender", () => {
+  it("uses the name, send-as address and reply-to saved on the dashboard", async () => {
+    const db = world();
+    db.tables.gie_tenant_mail_settings = [{ tenant_id: "t1", from_name: "BWE Growth", from_email: "growth@biz.net", reply_to_email: "hello@biz.net" }];
+    const send = okSend();
+    const r = await sendApprovedDraft(env, db, tenant, "d1", "u1", now, send as any);
+    expect(r.ok).toBe(true);
+    const mail = (send.mock.calls[0] as any[])[1];
+    expect(mail).toMatchObject({ fromName: "BWE Growth", fromEmail: "growth@biz.net", replyTo: "hello@biz.net" });
+    expect(db.tables.gie_outreach_drafts[0]).toMatchObject({ sent_from: "growth@biz.net" });
+  });
+  it("falls back to the mailbox login and the default name when nothing is saved", async () => {
+    const db = world();
+    const send = okSend();
+    await sendApprovedDraft(env, db, tenant, "d1", "u1", now, send as any);
+    const mail = (send.mock.calls[0] as any[])[1];
+    expect(mail.fromName).toBe("Business Web Express");
+    expect(mail.fromEmail).toBeUndefined();
+    expect(mail.replyTo).toBeUndefined();
+  });
+});

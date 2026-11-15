@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { getTenantSettings, saveDailyFocus } from "@/lib/workspace.functions";
+import { getTenantSettings, saveDailyFocus, saveMailSettings, type TenantSettings } from "@/lib/workspace.functions";
 import { FOCUSES, FOCUS_LABELS, type Focus } from "@/lib/actions/ranking";
 import { useWorkspace } from "@/lib/use-workspace";
 import { Notice, PageHeader, Panel } from "@/components/ui";
@@ -87,6 +87,7 @@ function SettingsPage() {
               ))}
             </ul>
           </Panel>
+          {q.data.mail ? <MailPanel key={JSON.stringify(q.data.mail.settings)} slug={tenant.slug} mail={q.data.mail} isOwner={q.data.tenant.role === "owner"} /> : null}
           {q.data.bwe ? (
             <Panel title="Data connections">
               {q.data.bwe.ok ? (
@@ -102,5 +103,59 @@ function SettingsPage() {
         </div>
       ) : null}
     </>
+  );
+}
+
+type MailView = NonNullable<TenantSettings["mail"]>;
+
+function MailPanel({ slug, mail, isOwner }: { slug: string; mail: MailView; isOwner: boolean }) {
+  const qc = useQueryClient();
+  const save = useServerFn(saveMailSettings);
+  const [fromName, setFromName] = useState(mail.settings.fromName);
+  const [fromEmail, setFromEmail] = useState(mail.settings.fromEmail ?? "");
+  const [replyTo, setReplyTo] = useState(mail.settings.replyTo ?? "");
+  const m = useMutation({
+    mutationFn: () => save({ data: { slug, fromName, fromEmail, replyTo } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings", slug] }),
+  });
+  const input = "mt-1 w-full rounded-lg border border-line bg-card px-3 py-2 outline-none focus:border-terracotta disabled:opacity-60";
+  const missing = [!mail.loginUser && "LEAD_EMAIL_SMTP_USER", !mail.passwordSet && "LEAD_EMAIL_SMTP_PASSWORD", !mail.unsubscribeSecretSet && "UNSUBSCRIBE_SECRET"].filter(Boolean);
+  const changed = fromName !== mail.settings.fromName || fromEmail.trim() !== (mail.settings.fromEmail ?? "") || replyTo.trim() !== (mail.settings.replyTo ?? "");
+  const replyElsewhere = replyTo.trim() !== "" && mail.repliesMailbox !== null && replyTo.trim().toLowerCase() !== mail.repliesMailbox.toLowerCase();
+  return (
+    <Panel title="Outreach email">
+      <dl className="grid grid-cols-[9rem_1fr] gap-y-1">
+        <dt className="text-espresso-soft">Emails appear from</dt>
+        <dd>{mail.shownFrom ? <><strong>{mail.settings.fromName}</strong> &lt;{mail.shownFrom}&gt;</> : <span className="text-espresso-soft">Not set up</span>}</dd>
+        <dt className="text-espresso-soft">Mailbox login</dt>
+        <dd>{mail.loginUser ?? <span className="text-espresso-soft">Not set</span>}{mail.loginUser ? (mail.passwordSet ? "" : " (password missing)") : ""}</dd>
+        <dt className="text-espresso-soft">Replies read from</dt>
+        <dd>{mail.repliesMailbox ?? <span className="text-espresso-soft">Not set</span>}</dd>
+      </dl>
+      {missing.length ? <div className="mt-3"><Notice tone="error">Sending is off until these Worker secrets are set: {missing.join(", ")}.</Notice></div> : null}
+      <form className="mt-4 space-y-3" onSubmit={(e) => { e.preventDefault(); m.mutate(); }}>
+        <label className="block">Sender name
+          <input className={input} value={fromName} disabled={!isOwner || m.isPending} onChange={(e) => setFromName(e.target.value)} />
+        </label>
+        <label className="block">Send-as address <span className="text-espresso-soft">(blank = the mailbox login)</span>
+          <input className={input} type="email" value={fromEmail} placeholder={mail.loginUser ?? "growth@businesswebexpress.com"} disabled={!isOwner || m.isPending} onChange={(e) => setFromEmail(e.target.value)} />
+        </label>
+        <label className="block">Reply-to address <span className="text-espresso-soft">(optional)</span>
+          <input className={input} type="email" value={replyTo} disabled={!isOwner || m.isPending} onChange={(e) => setReplyTo(e.target.value)} />
+        </label>
+        <p className="text-sm text-espresso-soft">
+          The send-as address must be the mailbox login itself or an alias that mailbox is allowed to send as (in Gmail: Settings, Accounts, "Send mail as"), or the provider may change it or reject the email.
+          The mailbox login and password are Worker secrets and are not changed here.
+        </p>
+        {replyElsewhere ? <Notice>Replies to a different mailbox than "Replies read from" will not be detected by this app.</Notice> : null}
+        {m.error ? <Notice tone="error">{m.error.message}</Notice> : null}
+        {isOwner ? (
+          <div className="flex items-center gap-3">
+            <button type="submit" className="rounded-lg bg-terracotta px-4 py-2 text-white disabled:opacity-50" disabled={m.isPending || !changed}>{m.isPending ? "Saving…" : "Save"}</button>
+            {m.isSuccess && !changed ? <span role="status" className="text-sm text-espresso-soft">Saved. Applies to the next email sent.</span> : null}
+          </div>
+        ) : <p className="text-sm text-espresso-soft">Only the workspace owner can change these.</p>}
+      </form>
+    </Panel>
   );
 }

@@ -1167,4 +1167,27 @@ DO $$ BEGIN
   END;
 END $$;
 
+-- Outreach sender settings.
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_tenant_mail_settings (tenant_id, from_email, reply_to_email)
+    SELECT id, 'growth@biz.net', 'hello@biz.net' FROM gie_staging.gie_tenants WHERE slug = 'client-b';
+  RAISE NOTICE 'ok - sender settings can be stored';
+  BEGIN
+    UPDATE gie_staging.gie_tenant_mail_settings SET from_email = 'not an email';
+    RAISE EXCEPTION 'FAILED: invalid address accepted';
+  EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - an invalid send-as address is rejected';
+  END;
+  BEGIN
+    UPDATE gie_staging.gie_tenant_mail_settings SET from_name = E'Two\nLines';
+    RAISE EXCEPTION 'FAILED: line break in sender name accepted';
+  EXCEPTION WHEN check_violation THEN RAISE NOTICE 'ok - a sender name with a line break is rejected';
+  END;
+END $$;
+SET ROLE authenticated;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_tenant_mail_settings), 'a member reads their own sender settings');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_tenant_mail_settings), 'another workspace cannot read them');
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;
