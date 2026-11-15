@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -18,9 +19,13 @@ function SettingsPage() {
 
   const qc = useQueryClient();
   const saveFocus = useServerFn(saveDailyFocus);
+  const [pick, setPick] = useState<Focus | null>(null);
   const focusM = useMutation({
     mutationFn: (focus: Focus) => saveFocus({ data: { slug: tenant.slug, focus } }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings", tenant.slug] }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["settings", tenant.slug] });
+      setPick(null);
+    },
   });
 
   return (
@@ -46,11 +51,16 @@ function SettingsPage() {
                 <dt className="text-espresso-soft">Daily focus</dt>
                 <dd>
                   {q.data.tenant.role === "owner" ? (
-                    <select aria-label="Daily focus" className="rounded border border-espresso/30 bg-transparent px-2 py-1" value={q.data.schedule.dailyFocus} disabled={focusM.isPending} onChange={(e) => focusM.mutate(e.target.value as Focus)}>
-                      {FOCUSES.map((f) => <option key={f} value={f}>{FOCUS_LABELS[f]}</option>)}
-                    </select>
+                    <>
+                      <select aria-label="Daily focus" className="rounded border border-espresso/30 bg-transparent px-2 py-1" value={pick ?? q.data.schedule.dailyFocus} disabled={focusM.isPending} onChange={(e) => { focusM.reset(); setPick(e.target.value as Focus); }}>
+                        {FOCUSES.map((f) => <option key={f} value={f}>{FOCUS_LABELS[f]}</option>)}
+                      </select>
+                      <button type="button" className="ml-2 rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50" disabled={focusM.isPending || pick === null || pick === q.data.schedule.dailyFocus} onClick={() => pick && focusM.mutate(pick)}>
+                        {focusM.isPending ? "Saving…" : "Save"}
+                      </button>
+                    </>
                   ) : FOCUS_LABELS[q.data.schedule.dailyFocus]}
-                  {focusM.error ? <span role="alert" className="block text-sm text-red-700">{focusM.error.message}</span> : <span className="block text-sm text-espresso-soft">Applies from the next morning package.</span>}
+                  {focusM.error ? <span role="alert" className="block text-sm text-red-700">{focusM.error.message}</span> : <span role="status" className="block text-sm text-espresso-soft">{focusM.isSuccess ? "Saved. " : ""}Applies from the next morning package.</span>}
                 </dd>
               </dl>
             ) : <p className="text-espresso-soft">No schedule set.</p>}
