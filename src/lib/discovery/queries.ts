@@ -74,3 +74,38 @@ export function candidatesFromResults(results: SearchResult[]): CandidateDraft[]
   }
   return out;
 }
+
+/**
+ * Searches for businesses that are unhappy with their current web provider or
+ * are looking to switch. Offered as one-click additions to a campaign's
+ * buying-intent list; the owner can edit or remove them. Competitor names are
+ * only used in the owner's own text, never invented.
+ */
+export const SWITCHING_QUERY_TEMPLATES: readonly string[] = [
+  "unhappy with my web designer {location}",
+  "need a new web designer {location}",
+  "looking for a new website company {location}",
+  "switching web design agencies {location}",
+  "my website developer disappeared {location}",
+];
+
+/** Templates for each named competitor, e.g. "alternative to Wix {location}". Names are trimmed and de-duplicated. */
+export function competitorQueries(names: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of names) {
+    const n = raw.trim().replace(/\s+/g, " ").slice(0, 60);
+    if (!n || seen.has(n.toLowerCase())) continue;
+    seen.add(n.toLowerCase());
+    out.push(`alternative to ${n} {location}`, `leaving ${n} for a new website {location}`);
+  }
+  return out;
+}
+
+/** Adds queries to an existing list without repeating one already there (case-insensitive). */
+export function addQueries(existing: string[], additions: readonly string[]): string[] {
+  const have = new Set(existing.map((q) => q.trim().toLowerCase()));
+  const out = [...existing];
+  for (const a of additions) if (!have.has(a.trim().toLowerCase())) { have.add(a.trim().toLowerCase()); out.push(a); }
+  return out;
+}

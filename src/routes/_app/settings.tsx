@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { getTenantSettings } from "@/lib/workspace.functions";
+import { getTenantSettings, saveDailyFocus } from "@/lib/workspace.functions";
+import { FOCUSES, FOCUS_LABELS, type Focus } from "@/lib/actions/ranking";
 import { useWorkspace } from "@/lib/use-workspace";
 import { Notice, PageHeader, Panel } from "@/components/ui";
 
@@ -14,6 +15,13 @@ function SettingsPage() {
   const { tenant } = useWorkspace();
   const fetchSettings = useServerFn(getTenantSettings);
   const q = useQuery({ queryKey: ["settings", tenant.slug], queryFn: () => fetchSettings({ data: { slug: tenant.slug } }) });
+
+  const qc = useQueryClient();
+  const saveFocus = useServerFn(saveDailyFocus);
+  const focusM = useMutation({
+    mutationFn: (focus: Focus) => saveFocus({ data: { slug: tenant.slug, focus } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings", tenant.slug] }),
+  });
 
   return (
     <>
@@ -35,6 +43,15 @@ function SettingsPage() {
                 <dt className="text-espresso-soft">Working days</dt><dd>{q.data.schedule.workingDays.map((d) => DAY_NAMES[d]).join(", ")}</dd>
                 <dt className="text-espresso-soft">Morning package</dt><dd>{q.data.schedule.morningTime.slice(0, 5)}</dd>
                 <dt className="text-espresso-soft">End-of-day review</dt><dd>{q.data.schedule.eveningTime.slice(0, 5)}</dd>
+                <dt className="text-espresso-soft">Daily focus</dt>
+                <dd>
+                  {q.data.tenant.role === "owner" ? (
+                    <select aria-label="Daily focus" className="rounded border border-espresso/30 bg-transparent px-2 py-1" value={q.data.schedule.dailyFocus} disabled={focusM.isPending} onChange={(e) => focusM.mutate(e.target.value as Focus)}>
+                      {FOCUSES.map((f) => <option key={f} value={f}>{FOCUS_LABELS[f]}</option>)}
+                    </select>
+                  ) : FOCUS_LABELS[q.data.schedule.dailyFocus]}
+                  {focusM.error ? <span role="alert" className="block text-sm text-red-700">{focusM.error.message}</span> : <span className="block text-sm text-espresso-soft">Applies from the next morning package.</span>}
+                </dd>
               </dl>
             ) : <p className="text-espresso-soft">No schedule set.</p>}
           </Panel>

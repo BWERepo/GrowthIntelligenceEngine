@@ -11,7 +11,7 @@ import { maySpend, recordUsage } from "@/lib/spend.server";
 import { estimateCostUsd, worstCaseCostUsd, writeAssessment, AssessmentOutput, ASSESSMENT_PROMPT_VERSION } from "@/lib/providers/ai/anthropic.server";
 import { rankCandidates } from "@/lib/actions/ranking";
 import { checkChoice, hashFacts, isSettled, recommendDisposition, ungroundedNumbers, type Disposition, type ItemKind, type ItemStatus } from "@/lib/review/rules";
-import { loadCandidates, loadSchedule } from "./package.server";
+import { loadCandidates, loadFocus, loadSchedule } from "./package.server";
 import { runScores } from "./effectiveness.server";
 import type { TenantRow } from "./discover.server";
 
@@ -162,7 +162,7 @@ export async function finalizeReview(db: Db, tenant: TenantRow, localDate: strin
       }
     }
     const { followUps, candidates } = await loadCandidates(db, tenant.id, tomorrowDate);
-    const plan = rankCandidates(tomorrowDate, followUps, candidates).map((p) => ({ kind: p.kind, businessName: p.businessName, recommendedAction: p.recommendedAction, rankScore: p.rankScore }));
+    const plan = rankCandidates(tomorrowDate, followUps, candidates, await loadFocus(db, tenant.id)).map((p) => ({ kind: p.kind, businessName: p.businessName, recommendedAction: p.recommendedAction, rankScore: p.rankScore }));
     must(await db.from("gie_end_of_day_reviews").update({ status: "finalized", finalized_by: userId, finalized_at: now.toISOString(), tomorrow_plan: plan, tomorrow_date: tomorrowDate }).eq("tenant_id", tenant.id).eq("id", review.id));
     await db.from("gie_audit_events").insert({ tenant_id: tenant.id, actor_user_id: userId, action: "review.finalize", entity_type: "end_of_day_review", entity_id: review.id, after: { localDate, items: rows.length } });
     return { ok: true, tomorrow: plan.length };

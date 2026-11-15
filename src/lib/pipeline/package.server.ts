@@ -3,6 +3,7 @@
 // at most five, and prepare a draft for each top opportunity that has a public
 // email. One package per tenant-local date: the (tenant, local_date) key means
 // a second run does nothing.
+import { brokenLinkSentence, type LinkCheckMetrics } from "@/lib/discovery/linkcheck";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ServerEnv } from "@/lib/env.server";
 import { serviceClient } from "@/lib/supabase.server";
@@ -20,7 +21,7 @@ import {
   worstCaseCostUsd,
 } from "@/lib/providers/ai/anthropic.server";
 import { validateDraft } from "@/lib/actions/draft-validator";
-import { rankCandidates, RANKING_VERSION, STALE_AFTER_CARRIES, type FollowUpCandidate, type OpportunityCandidate } from "@/lib/actions/ranking";
+import { FOCUSES, rankCandidates, RANKING_VERSION, STALE_AFTER_CARRIES, type Focus, type FollowUpCandidate, type OpportunityCandidate } from "@/lib/actions/ranking";
 import type { TenantRow } from "./discover.server";
 
 type Db = SupabaseClient<any, any, any>;
@@ -43,6 +44,11 @@ export async function loadSchedule(db: Db, tenant: TenantRow): Promise<WorkSched
     eveningTime: sched?.evening_time ?? "17:00",
     closedDates: ((must(c) ?? []) as Array<{ closed_on: string }>).map((r) => r.closed_on),
   };
+}
+
+export async function loadFocus(db: Db, tenantId: string): Promise<Focus> {
+  const r = must(await db.from("gie_tenant_work_schedules").select("daily_focus").eq("tenant_id", tenantId).maybeSingle()) as { daily_focus: string } | null;
+  return (FOCUSES as readonly string[]).includes(r?.daily_focus ?? "") ? (r!.daily_focus as Focus) : "balanced";
 }
 
 export type PackageResult = { status: "created" | "skipped"; reason?: string; items: number; drafts: number };
@@ -146,15 +152,16 @@ export async function loadCandidates(db: Db, tenantId: string, localDate: string
 async function buildPackage(db: Db, env: ServerEnv, tenant: TenantRow, localDate: string, late: boolean, now: Date): Promise<PackageResult> {
   const { followUps, candidates, opps, contactBySource } = await loadCandidates(db, tenant.id, localDate);
 
-  const ranked = rankCandidates(localDate, followUps, candidates);
+  const focus = await loadFocus(db, tenant.id);
+  const ranked = rankCandidates(localDate, followUps, candidates, focus);
   if (!ranked.length) {
     // Still record an (empty) package: "no verified items today" is a fact, and the date is then claimed.
-    must(await db.from("gie_daily_action_packages").upsert({ tenant_id: tenant.id, local_date: localDate, late, ranking_version: RANKING_VERSION }, { onConflict: "tenant_id,local_date", ignoreDuplicates: true }));
+    must(await db.from("gie_daily_action_packages").upsert({ tenant_id: tenant.id, local_date: localDate, late, ranking_version: focus === "balanced" ? RANKING_VERSION : `${RANKING_VERSION}+${focus}` }, { onConflict: "tenant_id,local_date", ignoreDuplicates: true }));
     return { status: "created", items: 0, drafts: 0 };
   }
 
   const pkg = must(
-    await db.from("gie_daily_action_packages").upsert({ tenant_id: tenant.id, local_date: localDate, late, ranking_version: RANKING_VERSION }, { onConflict: "tenant_id,local_date" }).select("id").single(),
+    await db.from("gie_daily_action_packages").upsert({ tenant_id: tenant.id, local_date: localDate, late, ranking_version: focus === "balanced" ? RANKING_VERSION : `${RANKING_VERSION}+${focus}` }, { onConflict: "tenant_id,local_date" }).select("id").single(),
   ) as { id: string };
   const existing = ((must(await db.from("gie_daily_action_items").select("id").eq("tenant_id", tenant.id).eq("package_id", pkg.id)) ?? []) as unknown[]).length;
   if (existing) return { status: "skipped", reason: "package already has items", items: 0, drafts: 0 };
@@ -216,6 +223,9 @@ async function draftFor(db: Db, env: ServerEnv, tenant: TenantRow, opportunityId
   const speed = opp.website_url
     ? (must(await db.from("gie_sources").select("metrics").eq("tenant_id", tenant.id).eq("source_type", "pagespeed").eq("normalized_url", opp.website_url).order("fetched_at", { ascending: false }).limit(1).maybeSingle()) as { metrics: { performance: number | null; seo: number | null } | null } | null)
     : null;
+  const links = opp.website_url
+    ? (must(await db.from("gie_sources").select("metrics").eq("tenant_id", tenant.id).eq("source_type", "link_check").eq("normalized_url", opp.website_url).order("fetched_at", { ascending: false }).limit(1).maybeSingle()) as { metrics: LinkCheckMetrics | null } | null)
+    : null;
   const prompt = buildDraftPrompt({
     businessName: opp.business_name,
     websiteUrl: opp.website_url,
@@ -223,6 +233,7 @@ async function draftFor(db: Db, env: ServerEnv, tenant: TenantRow, opportunityId
     summary: cls?.output?.summary ?? null,
     quotes: (cls?.evidence_checked?.quotes ?? []).filter((q) => q.found && (q.field === "intent_quote" || q.field === "industry_quote")).map((q) => q.quote),
     pagespeed: speed?.metrics ? { performance: speed.metrics.performance, seo: speed.metrics.seo } : null,
+    brokenLinks: brokenLinkSentence(links?.metrics ?? null),
   });
   const budget = await maySpend(db, tenant.id, tenant.timezone, "ai", worstCaseCostUsd("claude-opus-5-5", prompt.length + 2_000, 3_000), now);
   if (!budget.allowed) return false;

@@ -1,5 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { FOCUSES, type Focus } from "./actions/ranking";
+import { requireTenantRole } from "./tenant-access.server";
 import { requireUser } from "./auth-middleware";
 import { hasRole, resolveTenant, TENANT_ROLES, type Membership } from "./roles";
 import { serviceClient } from "./supabase.server";
@@ -34,7 +36,7 @@ const SettingsInput = z.object({ slug: z.string().regex(/^[a-z0-9][a-z0-9-]{1,39
 
 export type TenantSettings = {
   tenant: Membership;
-  schedule: { workingDays: number[]; morningTime: string; eveningTime: string } | null;
+  schedule: { workingDays: number[]; morningTime: string; eveningTime: string; dailyFocus: Focus } | null;
   budgets: Array<{ category: string; period: string; limitUsd: number; alertAt: number[] }>;
   members: Array<{ userId: string; email: string | null; role: string; isYou: boolean }>;
   bwe: BweConnection | null;
@@ -58,7 +60,7 @@ export const getTenantSettings = createServerFn({ method: "GET" })
     if (!tenant) throw new Error("Forbidden: you do not have access to this workspace.");
 
     const [schedule, budgets, members] = await Promise.all([
-      db.from("gie_tenant_work_schedules").select("working_days, morning_time, evening_time").eq("tenant_id", tenant.tenantId).maybeSingle(),
+      db.from("gie_tenant_work_schedules").select("working_days, morning_time, evening_time, daily_focus").eq("tenant_id", tenant.tenantId).maybeSingle(),
       db.from("gie_budgets").select("category, period, limit_usd, alert_at").eq("tenant_id", tenant.tenantId).order("category"),
       db.from("gie_tenant_memberships").select("user_id, role").eq("tenant_id", tenant.tenantId).order("role"),
     ]);
@@ -80,7 +82,7 @@ export const getTenantSettings = createServerFn({ method: "GET" })
     return {
       tenant,
       schedule: schedule.data
-        ? { workingDays: schedule.data.working_days, morningTime: schedule.data.morning_time, eveningTime: schedule.data.evening_time }
+        ? { workingDays: schedule.data.working_days, morningTime: schedule.data.morning_time, eveningTime: schedule.data.evening_time, dailyFocus: schedule.data.daily_focus }
         : null,
       budgets: (budgets.data ?? []).map((b: any) => ({
         category: b.category, period: b.period, limitUsd: Number(b.limit_usd), alertAt: (b.alert_at ?? []).map(Number),
@@ -93,4 +95,18 @@ export const getTenantSettings = createServerFn({ method: "GET" })
       })),
       bwe: isBwe ? await checkBweConnection(context.env) : null,
     };
+  });
+
+/** The owner picks what the day's plan leans towards; takes effect from the next package. */
+export const saveDailyFocus = createServerFn({ method: "POST" })
+  .middleware([requireUser])
+  .validator((d: unknown) => z.object({ slug: z.string().regex(/^[a-z0-9][a-z0-9-]{1,39}$/), focus: z.enum(FOCUSES) }).parse(d))
+  .handler(async ({ data, context }): Promise<{ ok: true }> => {
+    const tenant = await requireTenantRole(context.supabase, context.userId, data.slug, "owner");
+    const db = serviceClient(context.env, context.env.GIE_DB_SCHEMA);
+    const upd = await db.from("gie_tenant_work_schedules").update({ daily_focus: data.focus, updated_at: new Date().toISOString() }).eq("tenant_id", tenant.tenantId).select("tenant_id");
+    if (upd.error) throw new Error(upd.error.message);
+    if (!upd.data?.length) throw new Error("Not found: this workspace has no work schedule yet.");
+    await db.from("gie_audit_events").insert({ tenant_id: tenant.tenantId, actor_user_id: context.userId, action: "schedule.focus", entity_type: "work_schedule", entity_id: tenant.tenantId, after: { focus: data.focus } });
+    return { ok: true };
   });
