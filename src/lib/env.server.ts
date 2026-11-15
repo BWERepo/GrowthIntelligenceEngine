@@ -36,16 +36,44 @@ const EnvSchema = z
 
 export type ServerEnv = z.infer<typeof EnvSchema>;
 
+/** Secrets pasted into a dashboard often carry spaces, a line break, quotes or a "Name <address>" wrapper. */
+export function cleanValue(v: string | undefined, kind: "text" | "email" = "text"): string | undefined {
+  if (v === undefined) return undefined;
+  let t = v.trim().replace(/^(["'])(.*)\1$/s, "$2").trim();
+  if (kind === "email") {
+    const m = t.match(/<([^<>\s]+)>/);
+    if (m) t = m[1]!;
+  }
+  return t === "" ? undefined : t;
+}
+
+// Mail settings are optional: a value that is present but not usable is treated as not set (and logged by
+// name, never by value), so a bad mail secret switches sending off instead of taking the whole app down.
+const MAIL_CHECKS: Record<string, { kind: "text" | "email"; ok: (v: string) => boolean }> = {
+  LEAD_EMAIL_SMTP_USER: { kind: "email", ok: (v) => z.string().email().safeParse(v).success },
+  LEAD_EMAIL_SMTP_PASSWORD: { kind: "text", ok: (v) => v.length >= 8 },
+  EMAIL_LOG_IMAP_USER: { kind: "email", ok: (v) => z.string().email().safeParse(v).success },
+  EMAIL_LOG_IMAP_PASSWORD: { kind: "text", ok: (v) => v.length >= 8 },
+  UNSUBSCRIBE_SECRET: { kind: "text", ok: (v) => v.length >= 16 },
+};
+
 export function readServerEnv(source: Record<string, string | undefined> = process.env): ServerEnv {
-  const blankToUndefined = Object.fromEntries(Object.entries(source).map(([k, v]) => [k, v === "" ? undefined : v]));
+  const cleaned: Record<string, string | undefined> = Object.fromEntries(Object.entries(source).map(([k, v]) => [k, typeof v === "string" ? cleanValue(v, MAIL_CHECKS[k]?.kind) : undefined]));
+  for (const [name, check] of Object.entries(MAIL_CHECKS)) {
+    const v = cleaned[name];
+    if (v !== undefined && !check.ok(v)) {
+      console.warn(`[config] ${name} is set but not valid, so it is ignored (the value is not shown).`);
+      cleaned[name] = undefined;
+    }
+  }
   const parsed = EnvSchema.safeParse({
-    ...blankToUndefined,
+    ...cleaned,
     // The browser build reads the same URL and key as VITE_ vars; accept either name.
-    SUPABASE_URL: source.SUPABASE_URL ?? source.VITE_SUPABASE_URL,
-    SUPABASE_PUBLISHABLE_KEY: source.SUPABASE_PUBLISHABLE_KEY ?? source.VITE_SUPABASE_PUBLISHABLE_KEY,
+    SUPABASE_URL: cleaned.SUPABASE_URL ?? cleaned.VITE_SUPABASE_URL,
+    SUPABASE_PUBLISHABLE_KEY: cleaned.SUPABASE_PUBLISHABLE_KEY ?? cleaned.VITE_SUPABASE_PUBLISHABLE_KEY,
   });
   if (!parsed.success) {
-    const fields = parsed.error.issues.map((i) => i.path.join(".") || i.message).join(", ");
+    const fields = parsed.error.issues.map((i) => `${i.path.join(".") || i.message} (${source[i.path[0] as string] === undefined || cleaned[i.path[0] as string] === undefined ? "missing" : "set but not valid"})`).join(", ");
     throw new Error(`Server configuration is incomplete: ${fields}`);
   }
   return parsed.data;
