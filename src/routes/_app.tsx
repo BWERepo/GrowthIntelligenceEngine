@@ -36,8 +36,17 @@ function AppLayout() {
 
   useEffect(() => {
     const sb = browserSupabase();
-    sb.auth.getSession().then(({ data }) => setSession(data.session ? "in" : "out"));
-    const { data: sub } = sb.auth.onAuthStateChange((_event, s) => setSession(s ? "in" : "out"));
+    // A password-only session of an account that has an authenticator counts as signed out.
+    const check = async (hasSession: boolean) => {
+      if (!hasSession) return setSession("out");
+      const { data: aal } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+      setSession(aal?.nextLevel === "aal2" && aal.currentLevel !== "aal2" ? "out" : "in");
+    };
+    sb.auth.getSession().then(({ data }) => void check(!!data.session));
+    const { data: sub } = sb.auth.onAuthStateChange((_event, s) => {
+      // Not awaited inside the callback: Supabase calls from here can deadlock.
+      setTimeout(() => void check(!!s), 0);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
   useEffect(() => {
