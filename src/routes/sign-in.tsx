@@ -63,8 +63,8 @@ function SignInPage() {
   const input = "mt-1 w-full rounded-lg border border-line bg-card px-3 py-2.5 text-base outline-none focus:border-terracotta";
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-4">
-      <p className="font-mono text-[0.68rem] uppercase tracking-[0.22em] text-terracotta">Business Web Express</p>
-      <h1 className="mt-1 font-display text-3xl tracking-tight">Growth Intelligence</h1>
+      <img src="/bwe-logo.png" width={520} height={374} alt="Business Web Express" className="mb-6 h-36 w-auto self-start" />
+      <h1 className="font-display text-3xl tracking-tight">Growth Intelligence</h1>
       <p className="mt-2 text-espresso-soft">Sign in with your Business Web Express back-office account.</p>
       {error ? <div className="mt-4"><Notice tone="error">{error}</Notice></div> : null}
       {step === "password" ? (

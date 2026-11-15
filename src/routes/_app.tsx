@@ -79,6 +79,7 @@ function AppLayout() {
         <aside className="border-b border-line bg-card lg:min-h-screen lg:border-r lg:border-b-0">
           <div className="flex items-center justify-between px-4 py-4 lg:block lg:px-5 lg:py-6">
             <div>
+              <img src="/bwe-logo.png" width={520} height={374} alt="Business Web Express" className="mb-2 h-12 w-auto lg:mb-3 lg:h-24" />
               <p className="font-mono text-[0.65rem] uppercase tracking-[0.22em] text-terracotta">Growth Intelligence</p>
               <p className="font-display text-lg font-semibold tracking-tight">{tenant.name}</p>
             </div>
