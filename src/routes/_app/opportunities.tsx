@@ -23,6 +23,9 @@ const QUOTE_LABEL: Record<string, string> = {
   published_date_quote: "Date",
 };
 
+const DISMISS_REASONS = ["No sign of needing help"] as const;
+const OTHER = "Other";
+
 type StatusFilter = "open" | "new" | "saved" | "pursuing" | "dismissed" | "archived";
 type SignalFilter = "all" | "buying_intent" | "prospecting";
 
@@ -84,7 +87,9 @@ function OpportunityItem({ o, canAct }: { o: OpportunityCard; canAct: boolean })
   const setStatus = useServerFn(setOpportunityStatus);
   const [open, setOpen] = useState(false);
   const [dismissing, setDismissing] = useState(false);
-  const [reason, setReason] = useState("");
+  const [reasonChoice, setReasonChoice] = useState<string>(DISMISS_REASONS[0]);
+  const [otherReason, setOtherReason] = useState("");
+  const reason = reasonChoice === OTHER ? otherReason.trim() : reasonChoice;
   const m = useMutation({
     mutationFn: (v: { status: "saved" | "pursuing" | "dismissed" | "archived" | "new"; reason?: string }) =>
       setStatus({ data: { slug: tenant.slug, id: o.id, ...v } }),
@@ -181,11 +186,19 @@ function OpportunityItem({ o, canAct }: { o: OpportunityCard; canAct: boolean })
             m.mutate({ status: "dismissed", reason }, { onSuccess: () => setDismissing(false) });
           }}
         >
-          <label className="flex-1">
+          <label>
             <span className="sr-only">Why dismiss</span>
-            <input className="w-full rounded-lg border border-line px-3 py-1.5 text-sm" placeholder="Why? (e.g. not a fit, already has a new site)" value={reason} required maxLength={300} onChange={(e) => setReason(e.target.value)} />
+            <select className="rounded-lg border border-line bg-card px-3 py-1.5 text-sm" value={reasonChoice} onChange={(e) => setReasonChoice(e.target.value)}>
+              {[...DISMISS_REASONS, OTHER].map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
           </label>
-          <button className={btn} type="submit" disabled={m.isPending || !reason.trim()}>Dismiss</button>
+          {reasonChoice === OTHER ? (
+            <label className="flex-1">
+              <span className="sr-only">Other reason</span>
+              <input className="w-full rounded-lg border border-line px-3 py-1.5 text-sm" placeholder="Say why (e.g. already has a new site)" value={otherReason} required maxLength={300} autoFocus onChange={(e) => setOtherReason(e.target.value)} />
+            </label>
+          ) : null}
+          <button className={btn} type="submit" disabled={m.isPending || !reason}>Dismiss</button>
         </form>
       ) : null}
       {o.dismissReason ? <p className="mt-2 text-sm text-espresso-soft">Dismissed: {o.dismissReason}</p> : null}

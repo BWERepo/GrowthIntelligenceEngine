@@ -25,6 +25,10 @@
   "env": {
     "staging": {
       "name": "growth-intelligence-staging",
+      // "routes" is inherited from the top level unless set here. Without this empty list every
+      // staging deploy took over the production address (growthintelligence.businesswebexpress.com).
+      "routes": [],
+      "workers_dev": true,
       "triggers": { "crons": ["*/15 * * * *"] },
       "vars": {
         "GIE_DB_SCHEMA": "gie_staging",
