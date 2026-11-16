@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateDraft, type DraftInput } from "@/lib/actions/draft-validator";
+import { mentionsBusiness, validateDraft, type DraftInput } from "@/lib/actions/draft-validator";
 
 const U = "{{unsubscribe_link}}";
 const A = "{{mailing_address}}";
@@ -50,5 +50,23 @@ describe("draft validator", () => {
   });
   it("checks the follow-up text too", () => {
     expect(rules({ followUpBody: "We guarantee a #1 ranking for Smith Family Dental, act now." })).toEqual(expect.arrayContaining(["no-guarantees", "no-pressure"]));
+  });
+  it("allows a polite 'no obligation' as a warning, not a blocking error", () => {
+    const v = validateDraft({ ...good, body: good.body.replace("no strings attached", "there's no obligation") });
+    expect(v.ok).toBe(true);
+    expect(v.errors.map((e) => e.rule)).not.toContain("no-spam-claims");
+    expect(v.warnings.map((w) => w.rule)).toContain("spam-filter-phrase");
+    expect(rules({ body: good.body + " It's 100% free and risk-free." })).toContain("no-spam-claims");
+  });
+  it("recognises the business by name, loosely, or by its website", () => {
+    expect(mentionsBusiness("I enjoyed reading about COMPASS HEATING & AIR.", "Compass Heating and Air, LLC", null)).toBe(true);
+    expect(mentionsBusiness("I came across compasshvac.com recently.", "Compass Heating & Air Conditioning", "compasshvac.com")).toBe(true);
+    expect(mentionsBusiness("A matching @compasshvac.com address is a small change.", "Compass HVAC Inc.", "www.compasshvac.com")).toBe(true);
+    expect(mentionsBusiness("Your CompassHVAC site loads slowly.", "Compass HVAC", null)).toBe(true);
+    expect(mentionsBusiness("Smith's Family Dental is great.", "Smiths Family Dental", null)).toBe(true);
+    expect(mentionsBusiness("I noticed your site loads slowly.", "Compass HVAC", "compasshvac.com")).toBe(false);
+    expect(mentionsBusiness("A compass points north.", "Compass HVAC", null)).toBe(false);
+    const v = validateDraft({ ...good, body: good.body.replace(/Smith Family Dental's site/, "smithfamilydental.com") });
+    expect(v.warnings.map((w) => w.rule)).not.toContain("no-business-name");
   });
 });
