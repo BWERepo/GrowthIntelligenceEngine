@@ -28,9 +28,16 @@ const PROHIBITED: Array<[RegExp, string, string]> = [
   [/\b(testimonial|five[- ]star|5[- ]star|clients love|customers love)\b/i, "no-testimonials", "Do not use testimonials or ratings."],
   [/\b(ai[- ]powered|powered by ai|artificial intelligence|chatgpt|our ai)\b/i, "no-ai-lead", "Do not lead with AI."],
   [/\b(act now|limited time|last chance|urgent|final notice|don'?t miss)\b/i, "no-pressure", "Avoid pressure language."],
-  [/\b(free money|100% free|risk[- ]free|no obligation)\b/i, "no-spam-claims", "Avoid spam-style claims."],
+  [/\b(free money|100% free|risk[- ]free)\b/i, "no-spam-claims", "Avoid spam-style claims."],
   [/\b(we are|we're)\s+(a\s+)?local\b|\blocal\s+phone\b/i, "no-local-claim", "Do not present BWE as local or give a local phone number."],
 ];
+
+// Courteous phrases that are fine to say but that some spam filters score. Shown as a
+// warning only: "There's no obligation" in a polite closing should not block approval.
+const SPAM_FILTER_PHRASES: RegExp[] = [/\bno obligation\b/i];
+
+/** Phrases the drafting prompt tells the model to avoid, kept beside the rules that check them. */
+export const PHRASES_TO_AVOID = ["guarantees about rankings, traffic or sales", "free money", "100% free", "risk-free", "no obligation", "act now", "limited time", "last chance", "urgent", "don't miss"];
 
 const GENERIC_AI_PHRASES: RegExp[] = [
   /\bi hope this (email|message) finds you well\b/i,
@@ -61,6 +68,10 @@ export function validateDraft(d: DraftInput): DraftValidation {
     const m = text.match(re);
     if (m) errors.push({ rule, message: `${message} Found: "${m[0].trim().slice(0, 60)}".` });
   }
+  for (const re of SPAM_FILTER_PHRASES) {
+    const m = text.match(re);
+    if (m) warnings.push({ rule: "spam-filter-phrase", message: `"${m[0]}" is fine to say, but some spam filters flag it. "No pressure" reads the same and is safer.` });
+  }
   for (const re of GENERIC_AI_PHRASES) {
     const m = text.match(re);
     if (m) warnings.push({ rule: "generic-phrasing", message: `Generic phrasing: "${m[0]}". Say it plainly.` });
@@ -72,7 +83,7 @@ export function validateDraft(d: DraftInput): DraftValidation {
   }
 
   // Named businesses and sites: only the prospect itself may be named as a fact about its site.
-  if (!new RegExp(escapeRegExp(d.prospect.businessName), "i").test(d.body)) {
+  if (!mentionsBusiness(d.body, d.prospect.businessName, d.prospect.websiteHost)) {
     warnings.push({ rule: "no-business-name", message: "The message does not mention the business by name." });
   }
   const urls = [...text.matchAll(/https?:\/\/[^\s)>\]]+/gi)].map((m) => m[0]);
@@ -94,6 +105,35 @@ export function validateDraft(d: DraftInput): DraftValidation {
   return { ok: errors.length === 0, errors, warnings };
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const LEGAL_SUFFIXES = new Set(["llc", "l", "c", "inc", "incorporated", "co", "corp", "corporation", "company", "ltd", "pllc", "pc", "llp"]);
+
+/** Lowercase words with punctuation removed ("&" becomes "and"). */
+function words(s: string): string[] {
+  return s.toLowerCase().replace(/&/g, " and ").replace(/['’]/g, "").split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/**
+ * True when the body names the business: its name without legal suffixes or
+ * punctuation (any case), the name run together ("compasshvac"), or its website
+ * host with or without the ending ("compasshvac.com", "compasshvac").
+ */
+export function mentionsBusiness(body: string, businessName: string, websiteHost: string | null): boolean {
+  const bodyWords = words(body);
+  const bodyPhrase = ` ${bodyWords.join(" ")} `;
+  const bodySquashed = bodyWords.join("");
+  const core = words(businessName);
+  while (core.length > 1 && LEGAL_SUFFIXES.has(core[core.length - 1] ?? "")) core.pop();
+  if (core.length > 1 && core[0] === "the") core.shift();
+  if (core.length > 0) {
+    if (bodyPhrase.includes(` ${core.join(" ")} `)) return true;
+    const squashed = core.join("");
+    if (core.length > 1 && squashed.length >= 6 && bodySquashed.includes(squashed)) return true;
+  }
+  const host = (websiteHost ?? "").toLowerCase().replace(/^www\./, "");
+  if (host) {
+    if (body.toLowerCase().includes(host)) return true;
+    const stem = (host.split(".")[0] ?? "").replace(/[^a-z0-9]/g, "");
+    if (stem.length >= 4 && bodyWords.includes(stem)) return true;
+  }
+  return false;
 }
