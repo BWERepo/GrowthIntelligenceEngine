@@ -26,7 +26,7 @@ import {
   type ClassificationOutput,
 } from "@/lib/discovery/classification";
 import { dedupeKey, hostOf, normalizeUrl } from "@/lib/discovery/url";
-import { daysBetween, scoreOpportunity, type ScoreInputs } from "@/lib/scoring/opportunity";
+import { daysBetween, scoreOpportunity, type ScoreInputs, type SiteWeakness } from "@/lib/scoring/opportunity";
 
 type Db = SupabaseClient<any, any, any>;
 
@@ -231,6 +231,58 @@ function scoreInputsFor(
   };
 }
 
+/**
+ * Prospecting: PageSpeed (free) and a check of the pages linked from the
+ * homepage (only 404/410 counts as broken). Stores what was measured as
+ * sources and returns it for the score. A failed measurement is not fatal and
+ * is never counted as a weakness; null when nothing could be measured.
+ */
+async function measureSite(
+  db: Db,
+  env: ServerEnv,
+  fetcher: ReturnType<typeof createPoliteFetcher>,
+  tenantId: string,
+  candidateId: string,
+  website: string,
+): Promise<SiteWeakness | null> {
+  let measured = false;
+  const weakness: SiteWeakness = { mobilePerformance: null, mobileSeo: null, brokenLinks: 0, linksChecked: 0, https: null };
+  const host = hostOf(website) ?? "unknown";
+  if (env.PAGESPEED_API_KEY) {
+    try {
+      const metrics = await runPageSpeed(env.PAGESPEED_API_KEY, website);
+      must(await db.from("gie_sources").insert({ tenant_id: tenantId, source_type: "pagespeed", normalized_url: website, host, fetched_at: new Date().toISOString(), robots_allowed: true, metrics }));
+      await recordUsage(db, { tenantId, category: "other", provider: "pagespeed", operation: "runPagespeed", costUsd: 0, isEstimate: false, idempotencyKey: `pagespeed:${candidateId}` });
+      weakness.mobilePerformance = metrics.performance;
+      weakness.mobileSeo = metrics.seo;
+      measured = true;
+    } catch (error) {
+      console.warn("[discovery] pagespeed failed", error instanceof Error ? error.message : error);
+    }
+  }
+  try {
+    const home = await fetcher.fetchPage(website);
+    if (home.ok) {
+      weakness.https = home.finalUrl.startsWith("https:");
+      measured = true;
+      const results: LinkResult[] = [];
+      for (const link of pickLinksToCheck(home.links, home.finalUrl)) {
+        const r = await fetcher.fetchPage(link);
+        results.push({ url: link, status: r.status });
+      }
+      if (results.length) {
+        const summary = summarizeLinks(results);
+        must(await db.from("gie_sources").insert({ tenant_id: tenantId, source_type: "link_check", normalized_url: website, host, fetched_at: new Date().toISOString(), robots_allowed: true, metrics: summary }));
+        weakness.brokenLinks = summary.broken.length;
+        weakness.linksChecked = summary.checked;
+      }
+    }
+  } catch (error) {
+    console.warn("[discovery] link check failed", error instanceof Error ? error.message : error);
+  }
+  return measured ? weakness : null;
+}
+
 /** Classifies up to `limit` queued candidates of one tenant. */
 export async function runClassifyStage(
   db: Db,
@@ -397,9 +449,12 @@ export async function runClassifyStage(
       continue;
     }
 
-    // 6. Score in code, store the opportunity, the score and its parts.
+    // 6. Prospecting: measure the business's own website first, so the score can use what was measured.
+    const siteWeakness = c.signal_type === "prospecting" && website ? await measureSite(db, env, fetcher, tenant.id, c.id, website) : null;
+
+    // 7. Score in code, store the opportunity, the score and its parts.
     const contactOnOwnSite = !!website && hostOf(website) === pageHost;
-    const inputs = scoreInputsFor(value, checked.evidence.filter((e) => e.found).length, campaign, c, page.contact, contactOnOwnSite, now);
+    const inputs = { ...scoreInputsFor(value, checked.evidence.filter((e) => e.found).length, campaign, c, page.contact, contactOnOwnSite, now), siteWeakness };
     const score = scoreOpportunity(inputs);
     const inserted = await db
       .from("gie_opportunities")
@@ -447,55 +502,6 @@ export async function runClassifyStage(
     processed++;
     opportunities++;
 
-    // 7. Prospecting: measure the business's own website with PageSpeed (free). Failure is not fatal.
-    if (c.signal_type === "prospecting" && website && env.PAGESPEED_API_KEY) {
-      try {
-        const metrics = await runPageSpeed(env.PAGESPEED_API_KEY, website);
-        must(
-          await db.from("gie_sources").insert({
-            tenant_id: tenant.id,
-            source_type: "pagespeed",
-            normalized_url: website,
-            host: hostOf(website) ?? "unknown",
-            fetched_at: new Date().toISOString(),
-            robots_allowed: true,
-            metrics,
-          }),
-        );
-        await recordUsage(db, { tenantId: tenant.id, category: "other", provider: "pagespeed", operation: "runPagespeed", costUsd: 0, isEstimate: false, idempotencyKey: `pagespeed:${opp.id}` });
-      } catch (error) {
-        console.warn("[discovery] pagespeed failed", error instanceof Error ? error.message : error);
-      }
-    }
-
-    // 8. Prospecting: check the pages linked from their own homepage; only 404/410 counts as broken. Failure is not fatal.
-    if (c.signal_type === "prospecting" && website) {
-      try {
-        const home = await fetcher.fetchPage(website);
-        if (home.ok) {
-          const results: LinkResult[] = [];
-          for (const link of pickLinksToCheck(home.links, home.finalUrl)) {
-            const r = await fetcher.fetchPage(link);
-            results.push({ url: link, status: r.ok ? r.status : r.status });
-          }
-          if (results.length) {
-            must(
-              await db.from("gie_sources").insert({
-                tenant_id: tenant.id,
-                source_type: "link_check",
-                normalized_url: website,
-                host: hostOf(website) ?? "unknown",
-                fetched_at: new Date().toISOString(),
-                robots_allowed: true,
-                metrics: summarizeLinks(results),
-              }),
-            );
-          }
-        }
-      } catch (error) {
-        console.warn("[discovery] link check failed", error instanceof Error ? error.message : error);
-      }
-    }
   }
   return { processed, opportunities };
 }
