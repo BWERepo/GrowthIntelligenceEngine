@@ -25,7 +25,7 @@ export type FetchedPage =
     }
   | { ok: false; finalUrl: string; status: number | null; reason: "robots" | "not_public" | "http_error" | "not_html" | "too_large" | "network" };
 
-async function sha256Hex(s: string): Promise<string> {
+export async function sha256Hex(s: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }

@@ -71,6 +71,28 @@ describe("Opportunity Score v2 (golden cases)", () => {
     expect(parts(scoreOpportunity({ ...base, signalType: "prospecting", intentLevel: "none", siteWeakness: null })).intent).toBe(0);
   });
 
+  it("Facebook-only (no website found): full prospecting intent, new-website fit, no reachability", () => {
+    const s = scoreOpportunity({
+      ...base,
+      signalType: "prospecting",
+      intentLevel: "none",
+      businessSize: "unknown",
+      offerMatch: "none",
+      ageDays: null,
+      contact: null,
+      contactOnOwnSite: false,
+      backedClaims: 3,
+      totalClaims: 3,
+      confidence: 0.7,
+      siteWeakness: { mobilePerformance: null, mobileSeo: null, brokenLinks: 0, linksChecked: 0, https: null, noWebsite: true },
+    });
+    expect(parts(s)).toEqual({ intent: 0.3, fit: 0.8, freshness: 1, reachability: 0, evidence: 0.7 });
+    // 10.5 + 24 + 15 + 0 + 7 = 56.5
+    expect(s.score).toBe(57);
+    expect(s.band).toBe("review");
+    expect(s.components.find((c) => c.component === "reachability")!.explanation).toMatch(/Facebook/);
+  });
+
   it("buying intent ignores site weakness", () => {
     const s = scoreOpportunity({ ...base, intentLevel: "none", siteWeakness: { mobilePerformance: 10, mobileSeo: 10, brokenLinks: 5, linksChecked: 10, https: false } });
     expect(parts(s).intent).toBe(0);

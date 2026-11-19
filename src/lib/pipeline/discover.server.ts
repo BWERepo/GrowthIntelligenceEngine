@@ -15,13 +15,15 @@ import type { SearchProvider } from "@/lib/providers/search/types";
 import { pickLinksToCheck, summarizeLinks, type LinkResult } from "@/lib/discovery/linkcheck";
 import { runPageSpeed } from "@/lib/providers/pagespeed.server";
 import { classifyPage, estimateCostUsd, worstCaseCostUsd } from "@/lib/providers/ai/anthropic.server";
-import { createPoliteFetcher } from "@/lib/discovery/fetch.server";
-import { candidatesFromResults, planQueries } from "@/lib/discovery/queries";
+import { createPoliteFetcher, sha256Hex, type FetchedPage } from "@/lib/discovery/fetch.server";
+import { candidatesFromResults, excludedHost, planQueries } from "@/lib/discovery/queries";
+import { findOwnWebsite, isFacebookHost, snippetText } from "@/lib/discovery/facebook";
 import {
   buildUserPrompt,
   checkClassification,
   CLASSIFICATION_PROMPT_VERSION,
   CLASSIFICATION_SCHEMA_VERSION,
+  CLASSIFICATION_SNIPPET_PROMPT_VERSION,
   MAX_PAGE_CHARS,
   type ClassificationOutput,
 } from "@/lib/discovery/classification";
@@ -54,6 +56,7 @@ type CandidateRow = {
   url: string;
   normalized_url: string;
   title: string | null;
+  snippet: string | null;
   published_at: string | null;
   attempts: number;
   local_date: string;
@@ -150,7 +153,7 @@ export async function runSearchStage(
           requestId: response.requestId,
           idempotencyKey: `search:${campaign.id}:${local.date}:${q.signalType}:${q.query}`,
         });
-        const drafts = candidatesFromResults(response.results).slice(0, Math.max(0, campaign.daily_candidate_limit - campaignNew));
+        const drafts = candidatesFromResults(response.results, { facebookPages: q.signalType === "prospecting" }).slice(0, Math.max(0, campaign.daily_candidate_limit - campaignNew));
         if (!drafts.length) continue;
         const rows = drafts.map((d) => ({
           tenant_id: tenant.id,
@@ -291,9 +294,11 @@ export async function runClassifyStage(
   now: Date,
   limit = 3,
   fetcher = createPoliteFetcher(),
+  searchProvider?: SearchProvider,
 ): Promise<ClassifyStageResult> {
   if (!env.ANTHROPIC_API_KEY) return { processed: 0, opportunities: 0, stopped: "ANTHROPIC_API_KEY is not set" };
   const model = env.GIE_CLASSIFY_MODEL;
+  const provider = searchProvider ?? (env.BRAVE_SEARCH_API_KEY ? braveSearch(env.BRAVE_SEARCH_API_KEY) : null);
   // Check before claiming, so a tenant at its cap does not churn the queue.
   const pre = await maySpend(db, tenant.id, tenant.timezone, "ai", worstCaseCostUsd(model, MAX_PAGE_CHARS), now);
   if (!pre.allowed) return { processed: 0, opportunities: 0, stopped: pre.reason };
@@ -314,8 +319,21 @@ export async function runClassifyStage(
       continue;
     }
 
-    // 1. Fetch the page, obeying robots.txt.
-    const page = await fetcher.fetchPage(c.url);
+    // 1. Fetch the page, obeying robots.txt. A Facebook-only candidate is never
+    //    fetched: its source is the search provider's title and snippet.
+    const facebookOnly = c.signal_type === "prospecting" && isFacebookHost(hostOf(c.url));
+    let page: FetchedPage;
+    if (facebookOnly) {
+      const text = snippetText(c);
+      if (!text) {
+        await setCandidate(db, c, { state: "rejected", reason: "Facebook page without a search snippet: nothing to describe." });
+        processed++;
+        continue;
+      }
+      page = { ok: true, finalUrl: c.url, status: 0, title: c.title, text, links: [], contact: { emails: [], phones: [], hasContactForm: false, contactPageUrl: null }, contentHash: await sha256Hex(text) };
+    } else {
+      page = await fetcher.fetchPage(c.url);
+    }
     if (!page.ok) {
       const blocked = page.reason === "robots" || page.reason === "not_public";
       await setCandidate(db, c, {
@@ -329,7 +347,7 @@ export async function runClassifyStage(
     const pageHost = hostOf(page.finalUrl);
 
     // 2. Skip the AI call when this business is already an opportunity (same website).
-    if (pageHost) {
+    if (pageHost && !facebookOnly) {
       const existing = must(await db.from("gie_opportunities").select("id").eq("tenant_id", tenant.id).eq("dedupe_key", `site:${pageHost}`).maybeSingle()) as { id: string } | null;
       if (existing) {
         await setCandidate(db, c, { state: "duplicate", reason: "Same website as an existing opportunity.", opportunity_id: existing.id });
@@ -344,11 +362,12 @@ export async function runClassifyStage(
         .from("gie_sources")
         .insert({
           tenant_id: tenant.id,
-          source_type: "web_page",
+          // A Facebook-only source is the search result itself, not a fetched page.
+          source_type: facebookOnly ? "search_result" : "web_page",
           normalized_url: finalNormalized,
           host: pageHost ?? "unknown",
           fetched_at: new Date().toISOString(),
-          http_status: page.status,
+          http_status: facebookOnly ? null : page.status,
           robots_allowed: true,
           content_hash: page.contentHash,
           content_text: sourceText,
@@ -363,6 +382,7 @@ export async function runClassifyStage(
     const prompt = buildUserPrompt(
       { signalType: c.signal_type, industries: campaign.industries, locations: campaign.locations },
       { url: page.finalUrl, title: page.title, text: page.text },
+      { searchSnippet: facebookOnly },
     );
     const budget = await maySpend(db, tenant.id, tenant.timezone, "ai", worstCaseCostUsd(model, prompt.length), now);
     if (!budget.allowed) {
@@ -396,7 +416,7 @@ export async function runClassifyStage(
       candidate_id: c.id,
       source_id: source.id,
       schema_version: CLASSIFICATION_SCHEMA_VERSION,
-      prompt_version: CLASSIFICATION_PROMPT_VERSION,
+      prompt_version: facebookOnly ? CLASSIFICATION_SNIPPET_PROMPT_VERSION : CLASSIFICATION_PROMPT_VERSION,
       model: result.model,
       input_tokens: result.inputTokens,
       output_tokens: result.outputTokens,
@@ -435,7 +455,39 @@ export async function runClassifyStage(
     ) as { id: string };
 
     // 5. One opportunity per business: a second page about the same business is a duplicate.
-    const website = checked.websiteVerified && value.business_website_url ? normalizeUrl(value.business_website_url) : null;
+    const website = !facebookOnly && checked.websiteVerified && value.business_website_url ? normalizeUrl(value.business_website_url) : null;
+
+    // 4b. Facebook-only: one search for the business's own website. If it has one,
+    //     that site is queued as an ordinary prospect instead; "no website" is only
+    //     claimed when this search was actually made and found none.
+    if (facebookOnly) {
+      if (!provider) {
+        await setCandidate(db, c, { state: "failed", reason: "Cannot check for an own website: BRAVE_SEARCH_API_KEY is not set." });
+        processed++;
+        continue;
+      }
+      const sb = await maySpend(db, tenant.id, tenant.timezone, "search", provider.costPerQueryUsd, now);
+      if (!sb.allowed) {
+        for (const rest of claimed.slice(i)) await setCandidate(db, rest, { state: "pending", attempts: Math.max(0, rest.attempts - 1), claimed_at: null });
+        return { processed, opportunities, stopped: sb.reason };
+      }
+      const q = `"${value.business_name!.slice(0, 120)}"${value.location ? ` ${value.location.slice(0, 80)}` : ""}`;
+      const found = await provider.search(q, { count: 10 });
+      await recordUsage(db, { tenantId: tenant.id, category: "search", provider: provider.name, operation: "web_search", costUsd: provider.costPerQueryUsd, requestId: found.requestId, idempotencyKey: `own-site:${c.id}:${c.attempts}` });
+      const own = findOwnWebsite(found.results, value.business_name!, excludedHost);
+      if (own) {
+        const n = normalizeUrl(own);
+        if (n) {
+          await db.from("gie_discovery_candidates").upsert(
+            [{ tenant_id: tenant.id, campaign_id: campaign.id, signal_type: "prospecting", query: q.slice(0, 400), provider: provider.name, url: own.slice(0, 2048), normalized_url: n.slice(0, 2048), title: null, snippet: null, published_at: null, local_date: c.local_date }],
+            { onConflict: "tenant_id,normalized_url", ignoreDuplicates: true },
+          );
+        }
+        await setCandidate(db, c, { state: "rejected", reason: `Not Facebook-only: has its own website (${hostOf(own)}), queued as a prospect.`.slice(0, 500) });
+        processed++;
+        continue;
+      }
+    }
     const key = dedupeKey(website, page.finalUrl);
     if (!key) {
       await setCandidate(db, c, { state: "rejected", reason: "No usable URL for duplicate checking." });
@@ -450,7 +502,11 @@ export async function runClassifyStage(
     }
 
     // 6. Prospecting: measure the business's own website first, so the score can use what was measured.
-    const siteWeakness = c.signal_type === "prospecting" && website ? await measureSite(db, env, fetcher, tenant.id, c.id, website) : null;
+    const siteWeakness: SiteWeakness | null = facebookOnly
+      ? { mobilePerformance: null, mobileSeo: null, brokenLinks: 0, linksChecked: 0, https: null, noWebsite: true }
+      : c.signal_type === "prospecting" && website
+        ? await measureSite(db, env, fetcher, tenant.id, c.id, website)
+        : null;
 
     // 7. Score in code, store the opportunity, the score and its parts.
     const contactOnOwnSite = !!website && hostOf(website) === pageHost;

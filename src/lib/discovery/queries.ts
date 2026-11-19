@@ -2,6 +2,7 @@
 // queue candidates. Pure.
 import { hostOf, normalizeUrl } from "./url";
 import type { SearchResult } from "@/lib/providers/search/types";
+import { facebookPageUrl, isFacebookHost } from "./facebook";
 
 export type CampaignQueries = {
   buyingIntentQueries: string[];
@@ -58,11 +59,23 @@ export type CandidateDraft = {
   publishedAt: Date | null;
 };
 
-/** Normalizes, drops excluded and non-public URLs, and removes duplicates within one result list. */
-export function candidatesFromResults(results: SearchResult[]): CandidateDraft[] {
+/**
+ * Normalizes, drops excluded and non-public URLs, and removes duplicates within one result list.
+ * With `facebookPages` (prospecting searches), a result that is a business's
+ * Facebook page is kept as a Facebook-only candidate: it is never fetched,
+ * only its search title and snippet are used (see discovery/facebook.ts).
+ */
+export function candidatesFromResults(results: SearchResult[], opts: { facebookPages?: boolean } = {}): CandidateDraft[] {
   const out: CandidateDraft[] = [];
   const seen = new Set<string>();
   for (const r of results) {
+    if (opts.facebookPages && isFacebookHost(hostOf(r.url))) {
+      const page = facebookPageUrl(r.url);
+      if (!page || !r.snippet || seen.has(page)) continue;
+      seen.add(page);
+      out.push({ url: page, normalizedUrl: page, title: r.title, snippet: r.snippet, publishedAt: null });
+      continue;
+    }
     const normalizedUrl = normalizeUrl(r.url);
     if (!normalizedUrl) continue;
     const host = hostOf(normalizedUrl);

@@ -1190,4 +1190,17 @@ SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
 SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_tenant_mail_settings), 'another workspace cannot read them');
 RESET ROLE;
 
+-- Facebook-only prospects store the search result they came from.
+DO $$ BEGIN
+  INSERT INTO gie_staging.gie_sources (tenant_id, source_type, normalized_url, host, robots_allowed, content_text)
+    SELECT id, 'search_result', 'https://facebook.com/smokyplumbing', 'facebook.com', true, 'Smoky Plumbing | Knoxville' FROM gie_staging.gie_tenants WHERE slug = 'client-b';
+  RAISE NOTICE 'ok - a search_result source can be stored';
+END $$;
+SET ROLE authenticated;
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
+SELECT pg_temp.expect((SELECT count(*) = 0 FROM gie_staging.gie_sources WHERE source_type = 'search_result' AND host = 'facebook.com' AND normalized_url = 'https://facebook.com/smokyplumbing'), 'another workspace cannot read a search_result source');
+SELECT pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+SELECT pg_temp.expect((SELECT count(*) = 1 FROM gie_staging.gie_sources WHERE source_type = 'search_result' AND normalized_url = 'https://facebook.com/smokyplumbing'), 'its own workspace can read a search_result source');
+RESET ROLE;
+
 SELECT 'ALL DATABASE TESTS PASSED' AS result;
