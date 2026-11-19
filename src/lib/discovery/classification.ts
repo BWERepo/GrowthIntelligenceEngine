@@ -10,6 +10,8 @@ import { hostOf } from "./url";
 
 export const CLASSIFICATION_SCHEMA_VERSION = "opportunity-v1";
 export const CLASSIFICATION_PROMPT_VERSION = "classify-v1";
+/** Same prompt with a note that the source is a search result's title and snippet (Facebook-only prospects). */
+export const CLASSIFICATION_SNIPPET_PROMPT_VERSION = "classify-v1+snippet";
 /** Page text sent to the model is capped; the cap is recorded with the source. */
 export const MAX_PAGE_CHARS = 30_000;
 
@@ -54,7 +56,11 @@ Rules:
 - industry: pick from the campaign industries when one fits, "Other" if the business is in a different industry, null if unclear.
 - confidence: how sure you are that the fields above are correct (0 to 1).`;
 
-export function buildUserPrompt(ctx: CampaignContext, page: { url: string; title: string | null; text: string }): string {
+export function buildUserPrompt(
+  ctx: CampaignContext,
+  page: { url: string; title: string | null; text: string },
+  opts: { searchSnippet?: boolean } = {},
+): string {
   const text = page.text.length > MAX_PAGE_CHARS ? page.text.slice(0, MAX_PAGE_CHARS) : page.text;
   // The delimiter cannot be closed from inside the page: any tag-like text that
   // could end the block is defused before it is placed in the prompt.
@@ -63,6 +69,9 @@ export function buildUserPrompt(ctx: CampaignContext, page: { url: string; title
     `Campaign signal type: ${ctx.signalType === "buying_intent" ? "buying intent (a business asking for help)" : "prospecting (a business that might benefit from a better website)"}`,
     `Campaign industries: ${ctx.industries.join(", ") || "(any)"}`,
     `Campaign locations: ${ctx.locations.join("; ") || "(any)"}`,
+    ...(opts.searchSnippet
+      ? ["Source: only a search engine's title and snippet for this business's Facebook page; the page itself was not opened. Treat the snippet as the page text. Set business_website_url to null."]
+      : []),
     "",
     `<untrusted_page url="${page.url.replace(/"/g, "%22")}" title="${(page.title ?? "").replace(/"/g, "'")}">`,
     safe,

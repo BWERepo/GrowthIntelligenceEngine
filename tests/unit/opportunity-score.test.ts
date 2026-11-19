@@ -21,7 +21,7 @@ const base: ScoreInputs = {
 
 const parts = (s: ReturnType<typeof scoreOpportunity>) => Object.fromEntries(s.components.map((c) => [c.component, c.value]));
 
-describe("Opportunity Score v1 (golden cases)", () => {
+describe("Opportunity Score v2 (golden cases)", () => {
   it("weights add up to 100", () => {
     expect(Object.values(WEIGHTS).reduce((a, b) => a + b, 0)).toBe(100);
   });
@@ -41,6 +41,61 @@ describe("Opportunity Score v1 (golden cases)", () => {
     expect(s.band).toBe("review");
     const withIntent = scoreOpportunity({ ...base, signalType: "prospecting", intentLevel: "explicit_request" });
     expect(parts(withIntent).intent).toBe(0.3);
+  });
+
+  it("prospecting: an old page date does not drag freshness down (the live site was observed today)", () => {
+    const s = scoreOpportunity({ ...base, signalType: "prospecting", intentLevel: "none", ageDays: 2400 });
+    expect(parts(s).freshness).toBe(1);
+    // Buying intent still fades with age.
+    expect(parts(scoreOpportunity({ ...base, ageDays: 2400 })).freshness).toBe(0);
+  });
+
+  it("prospecting: measured website weaknesses give intent, 0.1 each, capped at 0.3", () => {
+    const p = { ...base, signalType: "prospecting" as const, intentLevel: "none" as const, ageDays: null, offerMatch: "none" as const, businessSize: "unknown" as const, backedClaims: 4, totalClaims: 4, confidence: 0.85 };
+    const one = scoreOpportunity({ ...p, siteWeakness: { mobilePerformance: 31, mobileSeo: 92, brokenLinks: 0, linksChecked: 8, https: true } });
+    expect(parts(one).intent).toBe(0.1);
+    expect(one.components[0]!.explanation).toMatch(/mobile speed 31\/100/);
+    const many = scoreOpportunity({ ...p, siteWeakness: { mobilePerformance: 20, mobileSeo: 55, brokenLinks: 2, linksChecked: 10, https: false } });
+    expect(parts(many).intent).toBe(0.3);
+    // 10.5 + 21 + 15 + 10 + 8.5 = 65
+    expect(many.score).toBe(65);
+    expect(many.band).toBe("review");
+    const healthy = scoreOpportunity({ ...p, siteWeakness: { mobilePerformance: 90, mobileSeo: 95, brokenLinks: 0, linksChecked: 10, https: true } });
+    expect(parts(healthy).intent).toBe(0);
+    expect(healthy.components[0]!.explanation).toMatch(/no weakness was found/);
+  });
+
+  it("prospecting: unmeasured values are never counted as weaknesses", () => {
+    const s = scoreOpportunity({ ...base, signalType: "prospecting", intentLevel: "none", siteWeakness: { mobilePerformance: null, mobileSeo: null, brokenLinks: 0, linksChecked: 0, https: null } });
+    expect(parts(s).intent).toBe(0);
+    expect(parts(scoreOpportunity({ ...base, signalType: "prospecting", intentLevel: "none", siteWeakness: null })).intent).toBe(0);
+  });
+
+  it("Facebook-only (no website found): full prospecting intent, new-website fit, no reachability", () => {
+    const s = scoreOpportunity({
+      ...base,
+      signalType: "prospecting",
+      intentLevel: "none",
+      businessSize: "unknown",
+      offerMatch: "none",
+      ageDays: null,
+      contact: null,
+      contactOnOwnSite: false,
+      backedClaims: 3,
+      totalClaims: 3,
+      confidence: 0.7,
+      siteWeakness: { mobilePerformance: null, mobileSeo: null, brokenLinks: 0, linksChecked: 0, https: null, noWebsite: true },
+    });
+    expect(parts(s)).toEqual({ intent: 0.3, fit: 0.8, freshness: 1, reachability: 0, evidence: 0.7 });
+    // 10.5 + 24 + 15 + 0 + 7 = 56.5
+    expect(s.score).toBe(57);
+    expect(s.band).toBe("review");
+    expect(s.components.find((c) => c.component === "reachability")!.explanation).toMatch(/Facebook/);
+  });
+
+  it("buying intent ignores site weakness", () => {
+    const s = scoreOpportunity({ ...base, intentLevel: "none", siteWeakness: { mobilePerformance: 10, mobileSeo: 10, brokenLinks: 5, linksChecked: 10, https: false } });
+    expect(parts(s).intent).toBe(0);
   });
 
   it("strong indirect signal, outside the area, only a contact form, 31 days old: 62", () => {

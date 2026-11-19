@@ -10,7 +10,11 @@
 // This is one of three separate measurements. It is never combined with the
 // Daily Effectiveness Score or 30-Day Growth.
 
-export const OPPORTUNITY_RULE_VERSION = "opportunity-score-v1";
+export const OPPORTUNITY_RULE_VERSION = "opportunity-score-v2";
+// v2: for prospecting signals, intent (capped at 0.3) comes from the measured
+// weaknesses of the business's own website, and freshness is the day the live
+// site was observed, not the age of the page (an old page is the signal itself).
+// A Facebook-only business (no website found) gets the full 0.3 intent.
 
 export const WEIGHTS = { intent: 35, fit: 30, freshness: 15, reachability: 10, evidence: 10 } as const;
 export type Component = keyof typeof WEIGHTS;
@@ -38,7 +42,29 @@ export type ScoreInputs = {
   backedClaims: number;
   totalClaims: number;
   confidence: number;
+  /** Prospecting only: measured facts about the business's own website, or null when none were measured. */
+  siteWeakness?: SiteWeakness | null;
 };
+
+/** Measured facts about a prospect's own website (PageSpeed mobile, link check, the URL itself). */
+export type SiteWeakness = {
+  /** PageSpeed mobile performance, 0-100, or null when not measured. */
+  mobilePerformance: number | null;
+  /** PageSpeed mobile SEO, 0-100, or null when not measured. */
+  mobileSeo: number | null;
+  /** Same-site links from the homepage that answered 404/410, and how many were checked. */
+  brokenLinks: number;
+  linksChecked: number;
+  /** False when the business's site was reached over plain http. */
+  https: boolean | null;
+  /** True for a Facebook-only business: a search for its name found no website of its own. */
+  noWebsite?: boolean;
+};
+
+export const WEAK_PERFORMANCE_BELOW = 50;
+export const WEAK_SEO_BELOW = 70;
+/** Each measured weakness adds this much prospecting intent, up to the 0.3 cap. */
+const WEAKNESS_STEP = 0.1;
 
 export type ScoreComponent = { component: Component; weight: number; value: number; points: number; explanation: string };
 export type OpportunityScore = { ruleVersion: string; score: number; band: Band; components: ScoreComponent[] };
@@ -57,12 +83,28 @@ function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+export function siteWeaknesses(w: SiteWeakness | null | undefined): string[] {
+  if (!w) return [];
+  if (w.noWebsite) return ["no website of its own found in a search for its name"];
+  const out: string[] = [];
+  if (w.mobilePerformance !== null && w.mobilePerformance < WEAK_PERFORMANCE_BELOW) out.push(`mobile speed ${w.mobilePerformance}/100`);
+  if (w.mobileSeo !== null && w.mobileSeo < WEAK_SEO_BELOW) out.push(`mobile SEO ${w.mobileSeo}/100`);
+  if (w.brokenLinks > 0) out.push(`${w.brokenLinks} of ${w.linksChecked} homepage links broken`);
+  if (w.https === false) out.push("no HTTPS");
+  return out;
+}
+
 function intent(i: ScoreInputs): [number, string] {
   const base = { explicit_request: 1, strong_indirect: 0.6, weak_indirect: 0.3, none: 0 }[i.intentLevel];
   if (i.signalType === "prospecting") {
-    // A weak website is a prospecting signal, not intent: capped at 0.3.
-    const v = Math.min(base, 0.3);
-    return [v, i.intentLevel === "none" ? "Prospecting signal: no request for help on the page." : `Prospecting signal, intent "${i.intentLevel}" capped at 0.3.`];
+    // A weak website is a prospecting signal, not intent: capped at 0.3. The
+    // weakness must be measured (PageSpeed, link check, http), never assumed.
+    const weak = siteWeaknesses(i.siteWeakness);
+    // Having no website at all is the strongest prospecting signal: the full 0.3.
+    const v = i.siteWeakness?.noWebsite ? 0.3 : Math.min(0.3, Math.max(base, weak.length * WEAKNESS_STEP));
+    if (weak.length) return [v, `Prospecting signal: measured weaknesses (${weak.join(", ")}), capped at 0.3.`];
+    if (!i.siteWeakness) return [Math.min(base, 0.3), i.intentLevel === "none" ? "Prospecting signal: the website was not measured, so no weakness is counted." : `Prospecting signal, intent "${i.intentLevel}" capped at 0.3.`];
+    return [Math.min(base, 0.3), i.intentLevel === "none" ? "Prospecting signal: the website was measured and no weakness was found." : `Prospecting signal, intent "${i.intentLevel}" capped at 0.3.`];
   }
   const text = {
     explicit_request: "The business explicitly asks for website help.",
@@ -101,7 +143,10 @@ function fit(i: ScoreInputs): [number, string] {
   } else {
     parts.push(i.businessSize === "unknown" ? "size unknown" : `${i.businessSize} business`);
   }
-  if (i.offerMatch === "new_website" || i.offerMatch === "redesign") {
+  if (i.siteWeakness?.noWebsite) {
+    v += 0.1;
+    parts.push("has no website of its own");
+  } else if (i.offerMatch === "new_website" || i.offerMatch === "redesign") {
     v += 0.1;
     parts.push(i.offerMatch === "new_website" ? "needs a new website" : "needs a redesign");
   }
@@ -109,10 +154,10 @@ function fit(i: ScoreInputs): [number, string] {
 }
 
 function freshness(i: ScoreInputs): [number, string] {
-  if (i.ageDays === null) {
-    if (i.signalType === "prospecting") return [1, "Prospecting signal observed on the live site today."];
-    return [0, "No publication date was found, so freshness is unknown (0)."];
-  }
+  // A prospecting signal is the state of the live site, observed today. The page's
+  // own age (a 2019 copyright, the search engine's page date) is not the signal's age.
+  if (i.signalType === "prospecting") return [1, i.siteWeakness?.noWebsite ? "Found in today's search results." : "Prospecting signal observed on the live site today."];
+  if (i.ageDays === null) return [0, "No publication date was found, so freshness is unknown (0)."];
   const age = Math.max(0, i.ageDays);
   if (age <= 3) return [1, `Published ${age} day(s) ago.`];
   const max = Math.max(4, i.maxAgeDays);
@@ -121,6 +166,7 @@ function freshness(i: ScoreInputs): [number, string] {
 }
 
 function reachability(i: ScoreInputs): [number, string] {
+  if (i.siteWeakness?.noWebsite) return [0, "No website of its own, so no verified contact channel; reach them through their Facebook page."];
   if (!i.contact || !i.contactOnOwnSite) return [0, "No contact channel found on the business's own site."];
   if (i.contact.emails > 0 || i.contact.phones > 0) return [1, "Public email or phone on the business's own site."];
   if (i.contact.hasContactForm) return [0.6, "Only a contact form on the business's own site."];

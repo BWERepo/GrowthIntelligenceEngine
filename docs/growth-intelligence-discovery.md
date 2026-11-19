@@ -212,7 +212,9 @@ Adapter interface: `search(query, options) → normalized results[]` plus `fetch
 - **PageSpeed Insights API** (free with an API key) for verified website assessments of a prospect's existing site.
 - **Your own Search Console / site_visits / GA4** for BWE's own traffic opportunities.
 
-Explicitly **not** included: scraping private groups, Facebook/LinkedIn scraping, harvesting personal emails, bypassing logins or CAPTCHAs. Reddit and similar community APIs restrict commercial use; they stay off unless their terms are reviewed and approved.
+Explicitly **not** included: scraping private groups, Facebook/LinkedIn scraping, harvesting personal emails, bypassing logins or CAPTCHAs.
+
+**Facebook-only prospects (owner's decision, 2026-11-19).** A business whose only web presence is a Facebook page is a prospecting signal. Facebook is still never fetched or scraped: such a lead is built only from the web search API's own result (title and snippet), which is stored as a `search_result` source so the evidence quotes stay checkable. One more search for the business's name and city then looks for its own website. If one is found, that site is queued as an ordinary prospect instead; "no website" is claimed only when that search found none. These leads have no verified contact channel (reachability 0), so the owner reaches them through their Facebook page. Reddit and similar community APIs restrict commercial use; they stay off unless their terms are reviewed and approved.
 
 **Important framing (from the spec and BWE's own positioning):** a weak or outdated website is a *prospecting* signal, not buying intent. The score and the UI keep these two apart (`signal_type`), and drafts for prospecting signals must not imply the owner asked for help.
 
